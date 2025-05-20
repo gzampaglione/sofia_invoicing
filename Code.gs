@@ -86,7 +86,13 @@ function buildAddOnCard(e) {
   data['Ordering Person Email'] = orderingPersonEmail;
 
   // Set Customer Name (e.g., Ashley Duchi), defaulting to sender if not found by Gemini
-  data['Customer Name'] = contactInfoParsed['Customer Name'] || orderingPersonName;
+  // IMPORTANT: Customer Name should NEVER be 'Sofia Deleon' or '@elmerkury.com' if a proper customer name is found.
+  // The prompt for Gemini is designed to extract this correctly now.
+  data['Customer Name'] = contactInfoParsed['Customer Name'] || ''; // Initialize empty, will be picked up by validation
+  // If Gemini failed to find a customer name, and the sender is NOT El Merkury, fallback to sender's name
+  if (!data['Customer Name'] && !orderingPersonEmail.includes("elmerkury.com")) {
+      data['Customer Name'] = orderingPersonName;
+  }
   
   // Set Delivery Contact Person (e.g., Romina), defaulting to Customer Name or sender if not found
   data['Contact Person'] = contactInfoParsed['Delivery Contact Person'] || data['Customer Name'] || orderingPersonName;
@@ -116,8 +122,8 @@ function buildAddOnCard(e) {
   // This preliminary calculation is for the initial tip display.
   // The full calculation will occur in handleItemMappingSubmit with actual QB item prices.
   data['Items Ordered'].forEach(item => {
-    // Attempt to parse price from description if present (e.g., "Pupusas Tray – Large (<span class="math-inline">140\)"\)
-const priceMatch \= item\.description\.match\(/\\</span>(\d+(\.\d{2})?)/);
+    // Attempt to parse price from description if present (e.g., "Pupusas Tray – Large ($140)")
+    const priceMatch = item.description.match(/\$(\d+(\.\d{2})?)/);
     const itemPrice = priceMatch ? parseFloat(priceMatch[1]) : 0;
     preliminarySubtotal += (parseInt(item.quantity) || 1) * itemPrice;
   });
@@ -203,13 +209,14 @@ function handleContactInfoSubmitWithValidation(e) {
   const inputs = e.commonEventObject.formInputs;
   const orderNum = e.parameters.orderNum;
 
-  // Client-side validation
-  const customerName = inputs['Customer Name']?.stringInputs?.value?.[0];
-  const contactPerson = inputs['Contact Person']?.stringInputs?.value?.[0];
-  const contactPhone = inputs['Contact Phone']?.stringInputs?.value?.[0];
-  const customerAddressLine1 = inputs['Customer Address Line 1']?.stringInputs?.value?.[0];
-  const deliveryDateMs = inputs['Delivery Date']?.dateInput?.msSinceEpoch;
-  const deliveryTimeStr = inputs['Delivery Time']?.stringInputs?.value?.[0];
+  // Retrieve values safely, defaulting to empty string if not present
+  const customerName = inputs?.['Customer Name']?.stringInputs?.value?.[0] || '';
+  const contactPerson = inputs?.['Contact Person']?.stringInputs?.value?.[0] || '';
+  const contactPhone = inputs?.['Contact Phone']?.stringInputs?.value?.[0] || '';
+  const customerAddressLine1 = inputs?.['Customer Address Line 1']?.stringInputs?.value?.[0] || '';
+  const deliveryDateMs = inputs?.['Delivery Date']?.dateInput?.msSinceEpoch; // Keep as is for date picker
+  const deliveryTimeStr = inputs?.['Delivery Time']?.stringInputs?.value?.[0] || '';
+
 
   const validationMessages = [];
 
@@ -219,7 +226,7 @@ function handleContactInfoSubmitWithValidation(e) {
   if (!customerName && !contactPerson) {
     validationMessages.push("• Either Customer Name or Delivery Contact Person is required.");
   }
-  if (!contactPhone) { // Only check Contact Phone as it covers both
+  if (!contactPhone) { // Only check Contact Phone as it covers both scenarios for a delivery phone
     validationMessages.push("• A Delivery Contact Phone number is required.");
   }
   if (!customerAddressLine1) {
@@ -260,7 +267,8 @@ function handleContactInfoSubmit(e) {
       newData[key] = deliveryTimeStr;
     }
     else { 
-      newData[key] = inputs[key].stringInputs?.value?.[0] || ''; 
+      // Ensure that 'stringInputs' and 'value' exist before accessing
+      newData[key] = inputs[key]?.stringInputs?.value?.[0] || ''; 
     }
   }
 
@@ -387,8 +395,8 @@ function buildItemMappingAndPricingCard(e) {
   // Additional Charges Section
   const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges (Optional)").setCollapsible(true);
   // Pre-populate tip amount calculated earlier
-  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount (<span class="math-inline">\)"\)\.setValue\(\(orderData\['TipAmount'\] \|\| 0\)\.toFixed\(2\)\)\);
-additionalChargesSection\.addWidget\(CardService\.newTextInput\(\)\.setFieldName\("other\_charges\_amount"\)\.setTitle\("Other Charges Amount \(</span>)").setValue("0.00"));
+  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue((orderData['TipAmount'] || 0).toFixed(2)));
+  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_amount").setTitle("Other Charges Amount ($)").setValue("0.00"));
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_description").setTitle("Other Charges Description"));
   card.addSection(additionalChargesSection);
 
@@ -703,9 +711,9 @@ function populateInvoiceSheet(orderNum) {
       const descriptionCell = newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow);
       descriptionCell.setValue(item.original_email_description || item.quickbooks_item_name).setWrap(false); 
       newSheet.getRange(ITEM_QTY_COL_INVOICE + currentRow).setValue(item.quantity);
-      newSheet.getRange(ITEM_UNIT_PRICE_COL_INVOICE + currentRow).setValue(item.unit_price).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\); 
-const lineTotal \= \(item\.quantity \|\| 0\) \* \(item\.unit\_price \|\| 0\);
-newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(lineTotal\)\.setNumberFormat\("</span>#,##0.00"); 
+      newSheet.getRange(ITEM_UNIT_PRICE_COL_INVOICE + currentRow).setValue(item.unit_price).setNumberFormat("$#,##0.00"); 
+      const lineTotal = (item.quantity || 0) * (item.unit_price || 0);
+      newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(lineTotal).setNumberFormat("$#,##0.00"); 
       grandTotal += lineTotal; currentRow++;
     });
 
@@ -716,13 +724,13 @@ newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(
 
     if (tipAmount > 0) {
         newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue("Tip").setWrap(false);
-        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(tipAmount).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\);
-grandTotal \+\= tipAmount;
-currentRow\+\+;
-\}
-if \(otherChargesAmount \> 0\) \{
-newSheet\.getRange\(ITEM\_DESCRIPTION\_COL\_INVOICE \+ currentRow\)\.setValue\(otherChargesDescription\)\.setWrap\(false\);
-newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(otherChargesAmount\)\.setNumberFormat\("</span>#,##0.00");
+        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(tipAmount).setNumberFormat("$#,##0.00");
+        grandTotal += tipAmount;
+        currentRow++;
+    }
+    if (otherChargesAmount > 0) {
+        newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(otherChargesDescription).setWrap(false);
+        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(otherChargesAmount).setNumberFormat("$#,##0.00");
         grandTotal += otherChargesAmount;
         currentRow++;
     }
@@ -746,15 +754,16 @@ newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(
         if (numUtensils > 0) {
             const utensilTotalCost = numUtensils * COST_PER_UTENSIL_SET;
             newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(`Utensils (${numUtensils} sets)`).setWrap(false);
-            newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(utensilTotalCost).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\);
-grandTotal \+\= utensilTotalCost;
-currentRow\+\+;
-\}
-\}
-const grandTotalDescCell \= newSheet\.getRange\(ITEM\_DESCRIPTION\_COL\_INVOICE \+ currentRow\);
-grandTotalDescCell\.setValue\("Grand Total\:"\)\.setFontWeight\("bold"\)\.setWrap\(false\);
-const grandTotalValueCell \= newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\);
-grandTotalValueCell\.setValue\(grandTotal\)\.setNumberFormat\("</span>#,##0.00").setFontWeight("bold").setHorizontalAlignment("right").setWrap(false);
+            newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(utensilTotalCost).setNumberFormat("$#,##0.00");
+            grandTotal += utensilTotalCost;
+            currentRow++;
+        }
+    }
+
+    const grandTotalDescCell = newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow);
+    grandTotalDescCell.setValue("Grand Total:").setFontWeight("bold").setWrap(false);
+    const grandTotalValueCell = newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow);
+    grandTotalValueCell.setValue(grandTotal).setNumberFormat("$#,##0.00").setFontWeight("bold").setHorizontalAlignment("right").setWrap(false);
     newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow + ":" + ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setBorder(true, null, null, null, null, true, "black", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
     
     SpreadsheetApp.flush();
