@@ -1,14 +1,16 @@
-// V13
+// Prompts.gs - V14
+// This file contains all Gemini AI prompts used for data extraction and matching.
 
 /**
  * Builds the Gemini prompt for extracting contact and order details from an email body.
- * Differentiates between 'Customer Name' (the main entity) and 'Delivery Contact Person' (who receives the delivery).
+ * Differentiates between 'Customer Name' (the main entity for billing) and 'Delivery Contact Person' (who receives the delivery).
+ * Ensures delivery date/time are from the body, and asks for all relevant contact info fields.
  * @param {string} body The plain text body of the email.
  * @returns {string} The formatted prompt.
  */
 function _buildContactInfoPrompt(body) {
   return 'Extract the following fields from this email and return ONLY a JSON object with no extra commentary:\n' +
-         'Customer Name: (The primary person or organization placing the order for billing/invoice. NOT elmerkury.com sender)\n' +
+         'Customer Name: (The primary person or organization placing the order for billing/invoice. This should NOT be related to elmerkury.com sender.)\n' +
          'Customer Address Line 1\n' +
          'Customer Address Line 2\n' +
          'Customer Address City\n' +
@@ -28,7 +30,8 @@ function _buildContactInfoPrompt(body) {
 
 /**
  * Builds the Gemini prompt for extracting ordered items from an email body.
- * Emphasizes extracting each distinct item line separately with its quantity and full description.
+ * Emphasizes extracting each distinct line as a separate item with quantity and full description,
+ * including modifiers, flavors, and sub-quantities.
  * @param {string} body The plain text body of the email.
  * @returns {string} The formatted prompt.
  */
@@ -41,6 +44,7 @@ function _buildStructuredItemExtractionPrompt(body) {
 
 /**
  * Builds the Gemini prompt for matching extracted email items to a master QuickBooks item list.
+ * Provides detailed instructions for matching, confidence scoring, and handling flavors/details.
  * @param {Array<object>} emailItems An array of objects, each with 'description' and 'quantity' from the email.
  * @param {Array<object>} masterQBItems An array of master QuickBooks item objects.
  * @returns {string} The formatted prompt.
@@ -48,7 +52,7 @@ function _buildStructuredItemExtractionPrompt(body) {
 function _buildItemMatchingPrompt(emailItems, masterQBItems) {
   if (!emailItems || emailItems.length === 0) return '';
   if (!masterQBItems || masterQBItems.length === 0) {
-    console.warn("Master QB Items list is empty, cannot build detailed item matching prompt.");
+    console.warn("Master QB Items list is empty, cannot build detailed item matching prompt. Using fallback.");
     return `Match the following email items to the fallback SKU "${FALLBACK_CUSTOM_ITEM_SKU}":\n` +
            emailItems.map((item, index) => `${index + 1}. Email Line: "${item.description}" (Ordered Quantity: ${item.quantity})`).join('\n') +
            '\nReturn ONLY a JSON array of objects with the format: ' +
