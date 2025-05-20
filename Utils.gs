@@ -11,23 +11,43 @@
 function _parseJson(raw) {
   if (!raw || typeof raw !== 'string') {
     console.error("Error in _parseJson: Input is not a valid string or is empty. Input: " + raw);
-    return {};
+    return {}; // Return an empty object for invalid input
   }
+
+  const trimmedRaw = raw.trim(); // Trim the raw input first
+
   try {
-    const cleanedJsonString = raw.replace(/^```json\s*([\s\S]*?)\s*```$/, '$1').trim();
-    return JSON.parse(cleanedJsonString);
+    // Attempt 1: Clean markdown and parse
+    // This regex handles "```json ... ```" or "``` ... ```"
+    const jsonBlockMatch = trimmedRaw.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+    let jsonToParse;
+
+    if (jsonBlockMatch && jsonBlockMatch[1]) {
+      jsonToParse = jsonBlockMatch[1].trim(); // Content within the markdown block
+    } else {
+      // If no markdown block is found, assume the trimmedRaw might be the JSON itself
+      jsonToParse = trimmedRaw;
+    }
+    return JSON.parse(jsonToParse);
+
   } catch (e) {
-    console.error("Error in _parseJson (first attempt): " + e.toString() + ". Raw input: " + raw);
-    const match = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/); // Fallback to find any JSON object/array
-    if (match && match[0]) {
+    console.warn("Warning in _parseJson (first attempt failed or no markdown block): " + e.toString() + ". Attempting direct parse or broad match. Original raw: " + raw.substring(0, 200) + "...");
+    
+    // Fallback Attempt: Try to find the first valid JSON object or array in the string
+    // This is more forgiving if the JSON is embedded or not perfectly formatted
+    const broadJsonMatch = trimmedRaw.match(/(\{[\s\S]*\})|(\[[\s\S]*\])/);
+    if (broadJsonMatch && (broadJsonMatch[1] || broadJsonMatch[2])) {
+      const potentialJson = (broadJsonMatch[1] || broadJsonMatch[2]).trim();
       try {
-        return JSON.parse(match[0]);
+        return JSON.parse(potentialJson);
       } catch (e2) {
-        console.error("Error in _parseJson (fallback attempt): " + e2.toString() + ". Matched string: " + match[0]);
-        throw new Error('Invalid JSON response from AI after attempting to clean: ' + raw);
+        console.error("Error in _parseJson (fallback attempt failed): " + e2.toString() + ". String attempted for parse: " + potentialJson.substring(0,200) + "...");
+        throw new Error('Invalid JSON response from AI after all cleaning attempts. Original raw (start): ' + raw.substring(0, 200) + "...");
       }
     }
-    throw new Error('Invalid JSON response from AI, and no object/array found: ' + raw);
+    // If still no valid JSON found
+    console.error("Error in _parseJson: Could not find valid JSON in the input. Original raw (start): " + raw.substring(0, 200) + "...");
+    throw new Error('Invalid JSON response from AI, and no JSON object/array found after all attempts. Original raw (start): ' + raw.substring(0, 200) + "...");
   }
 }
 
@@ -75,7 +95,7 @@ function _extractActualEmail(senderEmailField) {
 }
 
 /**
- * Parses a date string into milliseconds since epoch. Handles MM/DD/YYYY, YYYY-MM-DD, and MM/DD.
+ * Parses a date string into milliseconds since epoch. Handles MM/DD/YYYY, Kalimantan-MM-DD, and MM/DD.
  * Defaults to current date if parsing fails. When parsing MM/DD, it intelligently determines the year.
  * @param {string} dateString The date string to parse.
  * @returns {number} The date in milliseconds since epoch.
@@ -519,11 +539,22 @@ function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, po
     
     const recipient = orderData['Contact Email'] || orderData['Customer Address Email'] || orderData['Ordering Person Email']; // Prioritize Contact Email if explicitly set
     const subject = `Re: Catering Order Confirmation - ${orderNum}`;
-    const body = `Dear ${orderData['Contact Person'] || orderData['Customer Name'] || 'Valued Customer'},\n\nPlease find attached the invoice for your recent catering order (${orderNum}).\n\nDelivery is scheduled for ${orderData['Delivery Date']} around ${orderData['Delivery Time']}.\n\nThank you for your business!\n\nBest regards,\n[Your Company Name]`;
+    const body = `Dear ${orderData['Contact Person'] || orderData['Customer Name'] || 'Valued Customer'},\n\nPlease find attached the invoice for your recent catering order (${orderNum}).\n\nDelivery is scheduled for ${orderData['Delivery Date']} around ${data['Delivery Time']}.\n\nThank you for your business!\n\nBest regards,\n[Your Company Name]`;
     
     console.log(`PDFEmail: Preparing draft reply to: ${recipient}`);
     const draft = messageToReplyTo.createDraftReply(body, { htmlBody: body.replace(/\n/g, '<br>'), attachments: [pdfBlob], to: recipient });
     console.log("PDFEmail: Draft email created. ID: " + draft.getId());
     return { pdfBlob: pdfBlob, draft: draft, draftId: draft.getId() };
   } catch (e) { console.error("Error in createPdfAndPrepareEmailReply for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to create PDF or prepare email: " + e.message); }
+}
+
+/**
+ * Clears user properties for the current order and closes the sidebar.
+ * @param {GoogleAppsScript.Addons.EventObject} e The event object.
+ * @returns {GoogleAppsScript.Card_Service.ActionResponse} An action response to close the add-on.
+ */
+function handleClearAndClose(e) {
+    const orderNum = e.parameters.orderNum;
+    if (orderNum) { PropertiesService.getUserProperties().deleteProperty(orderNum); console.log("Cleared data for orderNum: " + orderNum); }
+    return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popToRoot()).setNotification(CardService.newNotification().setText("Order data cleared. Add-on is ready for the next email.")).build();
 }

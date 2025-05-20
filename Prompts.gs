@@ -1,31 +1,31 @@
-// Prompts.gs - V14
+// Prompts.gs - V22
 // This file contains all Gemini AI prompts used for data extraction and matching.
 
 /**
  * Builds the Gemini prompt for extracting contact and order details from an email body.
  * Differentiates between 'Customer Name' (the main entity for billing) and 'Delivery Contact Person' (who receives the delivery).
  * Ensures delivery date/time are from the body, and asks for all relevant contact info fields.
+ * Explicitly distinguishes customer's delivery address from sender's (El Merkury) address.
  * @param {string} body The plain text body of the email.
  * @returns {string} The formatted prompt.
  */
 function _buildContactInfoPrompt(body) {
-  return 'Extract the following fields from this email and return ONLY a JSON object with no extra commentary:\n' +
-         'Customer Name: (The primary person or organization placing the order for billing/invoice. This should NOT be related to elmerkury.com sender.)\n' +
-         'Customer Address Line 1\n' +
-         'Customer Address Line 2\n' +
-         'Customer Address City\n' +
-         'Customer Address State\n' +
-         'Customer Address ZIP\n' +
-         'Customer Address Phone: (This is the primary phone number for the customer, e.g., Ashley Duchi\'s direct line)\n' +
-         'Customer Address Email: (This is the primary email for the customer, e.g., Ashley Duchi\'s direct email)\n' +
-         'Delivery Date: (Must be from the email body, not the email header. Format as MM/DD/YYYY)\n' +
-         'Delivery Time: (Must be from the email body, not the email header. Format as HH:MM AM/PM)\n' +
-         'Include Utensils?\n' +
-         'If yes: how many?\n' +
+  return 'I will present you with an email or email chain. The subject matter of the email is always the same: it is always a potential customer requesting a catering order to be delivered in the near future from a Philadelphia restaurant named El Merkury, which is owned by Sofia Deleon (also spelled de Leon). Your job is to assist the catering manager of El Merkury with automatically extracting and categorizing information from this email, and then to generate generate an invoice, a kitchen sheet, and a response back to the customer. \n So, lets start with the first step, of extracting information from the email. Please extract the following fields from that email and return ONLY a JSON object with no extra commentary:\n' +
+         'Customer Name: (The primary person or organization placing the order for billing/invoice, usually the *individual\'s name* like "Ashley Duchi", not the institution like "University of Pennsylvania". This should NOT be related to elmerkury.com sender.)\n' +
+         'Customer Address Line 1: (The street address for DELIVERY. Do NOT use 2104 Chestnut St or any El Merkury address for delivery.)\n' +
+         'Customer Address Line 2: (Apt, Suite, Floor for DELIVERY. Do NOT use 2104 Chestnut St or any El Merkury address for delivery.)\n' +
+         'Customer Address City: (The city for DELIVERY. Default to Philadelphia unless otherwise specified.)\n' +
+         'Customer Address State: (The state for DELIVERY. Default to PA unless otherwise specified.)\n' +
+         'Customer Address ZIP: (The ZIP code for DELIVERY. Default to 19103 unless otherwise specified.)\n' +
+         'Customer Address Phone: (This is the primary phone number for the *customer placing the order*, typically found in their signature. Format: (XXX) XXX-XXXX if possible)\n' +
+         'Customer Address Email: (This is the primary email for the *customer placing the order*, typically found in their signature.)\n' +
+         'Delivery Date: (Must be from the email body, not the email header. Extract it from the body, then format as MM/DD/YYYY)\n' +
+         'Delivery Time: (Must be from the email body, not the email header. Extract it from the body, then format it as HH:MM AM/PM, e.g., "7:00 PM", "9:30 AM")\n' +
+         'Include Utensils?: (If it is clearly specified in the body of the email that the customer wishes utensils to be included, then mark Yes. Otherwise, return Unknown)\n' +
+         'If yes: how many?: (If earlier it is clearly specified in the body of the email that the customer wishes utensils to be included, then note how many should be included. Otherwise, return 0)\n' +
          'Delivery Contact Person: (The specific person who will receive the delivery, if different from Customer Name, e.g., "Romina")\n' +
          'Delivery Contact Phone: (The specific phone number for the delivery contact, e.g., Romina\'s direct line)\n' +
-         'Delivery Contact Email: (The specific email for the delivery contact, if different from Customer Address Email)\n\n' +
-         'Email:\n' + body;
+         'The email to be analyzed:\n' + body + '\n\n If the email is a chain, please look through all the emails sent by the customer (e.g., the sender of the email did NOT have @elmerkury.com in their domain name). Start with the most recent email as the sourth of truth, and then work backwards if there are missing values. If there are two values within the email chain for the same field, use the value from the more recent email';
 }
 
 /**
@@ -86,8 +86,8 @@ function _buildItemMatchingPrompt(emailItems, masterQBItems) {
     ${masterItemDetailsForPrompt}
 
     For EACH "Email Line" provided:
-    1. "original_email_description": The full description text from the "Email Line".
-    2. "extracted_main_quantity": The "Ordered Quantity" associated with that "Email Line" (as a string).
+    1. "original_email_description": The full description text from the email line.
+    2. "extracted_main_quantity": The "Ordered Quantity" associated with that email line (as a string).
     3. "matched_qb_item_id": The "SKU" from the QuickBooks Master Item List that is the BEST match for the main item in the email line. This SKU will be used as the QuickBooks Item ID.
     4. "matched_qb_item_name": The "Name" from the QuickBooks Master Item List corresponding to the "matched_qb_item_id" (SKU).
     5. "match_confidence": Your confidence in this match (choose one: High, Medium, Low).

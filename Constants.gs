@@ -12,17 +12,17 @@ const FALLBACK_CUSTOM_ITEM_SKU = "CUSTOM_SKU"; // Ensure this SKU exists in your
 
 // Client matching rules, sorted by rule length (descending) for more specific matches first.
 const CLIENT_RULES_LOOKUP = [
-  { rule: "@wharton.upenn.edu", clientName: "University of Pennsylvania - Wharton" },
-  { rule: "law.upenn.edu", clientName: "University of Pennsylvania - Law School"},
-  { rule: "@upenn.edu", clientName: "University of Pennsylvania" },
-  { rule: "@pennmedicine.upenn.edu", clientName: "Penn Medicine" }
+  { rule: "wharton.upenn.edu", clientName: "Penn Wharton" },
+  { rule: "law.upenn.edu", clientName: "Penn Law"},
+  { rule: "upenn.edu", clientName: "Penn" },
+  { rule: "pennmedicine.upenn.edu", clientName: "Penn Medicine" }
 ].sort((a, b) => b.rule.length - a.rule.length);
 
 // Delivery fee and utensil cost constants
-const BASE_DELIVERY_FEE = 15.00;
-const AFTER_4PM_DELIVERY_FEE = 25.00; // Example, adjust as needed for after-hours
+const BASE_DELIVERY_FEE = 25.00;
+const AFTER_4PM_DELIVERY_FEE = 40.00; // Example, adjust as needed for after-hours
 const DELIVERY_FEE_CUTOFF_HOUR = 16; // 4 PM (16:00 in 24-hour format)
-const COST_PER_UTENSIL_SET = 0.50; // Example cost per utensil set
+const COST_PER_UTENSIL_SET = 0.25; // Example cost per utensil set
 
 // === INVOICE TEMPLATE CELL MAPPING CONSTANTS ===
 // These map to specific cells in your INVOICE_TEMPLATE sheet for data population.

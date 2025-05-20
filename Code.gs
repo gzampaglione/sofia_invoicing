@@ -1,4 +1,4 @@
-// Code.gs - V15
+// Code.gs - V25
 // This is the main script file containing the core workflow logic for the Google Workspace Add-on.
 // It orchestrates calls to functions defined in Constants.gs, Prompts.gs, and Utils.gs.
 
@@ -84,50 +84,63 @@ function buildAddOnCard(e) {
   const contactInfoParsed = _parseJson(callGemini(_buildContactInfoPrompt(body)));
   const itemsParsed = _parseJson(callGemini(_buildStructuredItemExtractionPrompt(body)));
 
-  const orderingPersonName = _extractNameFromEmail(senderEmailFull); // This is the sender of the email (Sofia Deleon)
-  const orderingPersonEmail = _extractActualEmail(senderEmailFull);
+  // IMPORTANT: Removed direct capture of orderingPersonName and orderingPersonEmail
+  // as per requirement to not capture Sofia Deleon's info if not useful.
+  // The senderEmailFull is still used for client matching.
 
   // Generate a unique order number
   const timestampSuffix = Date.now().toString().slice(-5);
   const randomPrefix = Math.floor(Math.random() * 900 + 100).toString();
   const orderNum = (randomPrefix + timestampSuffix).slice(0,8).padStart(8,'0');
 
-  // Determine client based on email domain rules
-  const client = _matchClient(orderingPersonEmail);
+  // Determine client based on senderEmailFull
+  const client = _matchClient(senderEmailFull); // Use senderEmailFull for client matching
   console.log("Matched Client: " + client);
 
   const data = {};
-  // Store sender's info separately (Sofia Deleon / elmerkury.com)
-  data['Ordering Person Name'] = orderingPersonName;
-  data['Ordering Person Email'] = orderingPersonEmail;
+  // Store internal sender info for logging/debugging if necessary, but not displayed to user as 'Ordering Person'
+  data['Internal Sender Name'] = _extractNameFromEmail(senderEmailFull);
+  data['Internal Sender Email'] = _extractActualEmail(senderEmailFull);
 
-  // Set Customer Name (e.g., Ashley Duchi), defaulting to empty. It MUST NOT be elmerkury.com sender.
+
+  // Set Customer Name. Prioritize individual name from prompt. Avoid El Merkury.
+  // If Gemini provided 'Customer Name', use it. If not, and original sender is not El Merkury, use internal sender's name as a fallback.
   data['Customer Name'] = contactInfoParsed['Customer Name'] || '';
-  // If Gemini failed to find a customer name AND the sender is NOT El Merkury, fallback to sender's name.
-  // This ensures 'Customer Name' is never Sofia Deleon if it's an external order.
-  if (!data['Customer Name'] && !orderingPersonEmail.includes("elmerkury.com")) {
-      data['Customer Name'] = orderingPersonName;
+  if (!data['Customer Name'] && !data['Internal Sender Email'].includes("elmerkury.com")) {
+      data['Customer Name'] = data['Internal Sender Name'];
   }
   
-  // Set Delivery Contact Person (e.g., Romina), defaulting to Customer Name or sender if not found by Gemini
-  data['Contact Person'] = contactInfoParsed['Delivery Contact Person'] || data['Customer Name'] || orderingPersonName;
+  // Set Delivery Contact Person. Prioritize specific delivery contact, then customer name, then internal sender's name.
+  data['Contact Person'] = contactInfoParsed['Delivery Contact Person'] || data['Customer Name'] || data['Internal Sender Name'];
   
-  // Set Delivery Contact Phone, prioritizing from Gemini's extraction, then Customer Address Phone, then empty string.
-  data['Contact Phone'] = contactInfoParsed['Delivery Contact Phone'] || contactInfoParsed['Customer Address Phone'] || '';
-  // Set Delivery Contact Email, prioritizing from Gemini's extraction, then Customer Address Email, then Ordering Person's email.
-  data['Contact Email'] = contactInfoParsed['Delivery Contact Email'] || contactInfoParsed['Customer Address Email'] || orderingPersonEmail;
+  // Set Customer Address Phone (primary contact for the orderer)
+  data['Customer Address Phone'] = contactInfoParsed['Customer Address Phone'] || '';
+  // Set Delivery Contact Phone, prioritizing specific delivery contact, then customer address phone.
+  data['Contact Phone'] = contactInfoParsed['Delivery Contact Phone'] || data['Customer Address Phone'] || '';
 
-  // Invoice recipient email, primarily Customer Address Email, falls back to ordering person
-  data['Customer Address Email'] = contactInfoParsed['Customer Address Email'] || orderingPersonEmail;
+  // Set Customer Address Email (primary contact for the orderer)
+  data['Customer Address Email'] = contactInfoParsed['Customer Address Email'] || '';
+  // Delivery Contact Email is no longer a separate field per request. Default to Customer Address Email.
+  data['Contact Email'] = data['Customer Address Email'] || data['Internal Sender Email'];
 
+  // Explicitly set Delivery Address fields and Delivery Time from contactInfoParsed
+  // These should be reliable due to the strengthened Gemini prompt.
+  data['Customer Address Line 1'] = contactInfoParsed['Customer Address Line 1'] || '';
+  data['Customer Address Line 2'] = contactInfoParsed['Customer Address Line 2'] || '';
+  data['Customer Address City'] = contactInfoParsed['Customer Address City'] || '';
+  data['Customer Address State'] = contactInfoParsed['Customer Address State'] || '';
+  data['Customer Address ZIP'] = contactInfoParsed['Customer Address ZIP'] || '';
+  data['Delivery Date'] = contactInfoParsed['Delivery Date'] || ''; // Explicitly take from prompt
+  data['Delivery Time'] = contactInfoParsed['Delivery Time'] || ''; // Explicitly take from prompt
 
   data['Client'] = client;
   data['orderNum'] = orderNum;
   data['messageId'] = msgId;
   data['threadId'] = message.getThread().getId();
 
-  // Merge remaining extracted contact info (address, dates, utensils) directly into data object.
-  // This will apply values from contactInfoParsed if they exist, possibly overwriting initial defaults.
+  // Merge remaining extracted contact info (should primarily be duplicates or minor fields)
+  // Specific address and time fields are already handled above due to new requirements.
+  // This Object.assign might bring in other fields not explicitly handled above, which is fine.
   Object.assign(data, contactInfoParsed);
 
   data['Items Ordered'] = itemsParsed['Items Ordered'] || [];
@@ -158,7 +171,7 @@ function buildAddOnCard(e) {
 // === BUILD CUSTOMER CONTACT REVIEW CARD ===
 /**
  * Builds the card for reviewing and editing customer and delivery contact details.
- * Includes client-side validation requirements.
+ * Validation (requiring fields) is handled by the server-side handleContactInfoSubmitWithValidation.
  * @param {GoogleAppsScript.Addons.EventObject} e The event object containing the order number.
  * @returns {GoogleAppsScript.Card_Service.Card} The constructed review card.
  */
@@ -170,57 +183,68 @@ function buildReviewContactCard(e) {
     console.error("Error in buildReviewContactCard: Order data for " + orderNum + " not found.");
     return CardService.newCardBuilder().addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Error: Order data not found. Please try again."))).build();
   }
-  const data = JSON.parse(dataString);
+  const data = JSON.parse(dataString); // Correctly initialized here.
 
   const section = CardService.newCardSection();
   section.addWidget(CardService.newTextParagraph().setText('📋 Order #: <b>' + orderNum + '</b>'));
   
-  // Display Ordering Person (Sender) - this is Sofia Deleon
-  section.addWidget(CardService.newTextParagraph().setText("<b>Ordering Person (Sender):</b> " + (data['Ordering Person Name'] || 'N/A') + " (" + (data['Ordering Person Email'] || 'N/A') + ")"));
+  // Reordered fields as requested and renamed
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Name').setTitle('Customer Name').setValue(data['Customer Name'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Client').setTitle('Client').setValue(data['Client'] || 'Unknown')); // Client field from existing logic
+  
+  section.addWidget(CardService.newTextParagraph().setText("<b>Delivery Address:</b>"));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 1').setTitle('Line 1').setValue(data['Customer Address Line 1'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 2').setTitle('Line 2').setValue(data['Customer Address Line 2'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address City').setTitle('City').setValue(data['Customer Address City'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address State').setTitle('State').setValue(data['Customer Address State'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address ZIP').setTitle('ZIP').setValue(data['Customer Address ZIP'] || ''));
+  
+  // Renamed Customer Address Email/Phone to Customer Email/Phone
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Email').setTitle('Customer Email').setValue(data['Customer Address Email'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Phone').setTitle('Customer Phone').setValue(_formatPhone(data['Customer Address Phone'] || '')));
+  
+  // Divider added here
+  section.addWidget(CardService.newDivider());
 
-  // Editable fields for Customer and Delivery Contact
-  // Removed .setHint() as it's static instructional text, not dynamic pre-fill. setValue handles pre-fill.
-  // .setRequired() is NOT for TextInput, handled by handleContactInfoSubmitWithValidation.
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Name').setTitle('Customer Name (for invoice)').setValue(data['Customer Name'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Person').setTitle('Delivery Contact Person').setValue(data['Contact Person'] || data['Customer Name'] || ''));
-  
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Phone').setTitle('Delivery Contact Phone').setValue(_formatPhone(data['Contact Phone'] || data['Customer Address Phone'] || '')));
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Email').setTitle('Delivery Contact Email').setValue(data['Contact Email'] || data['Customer Address Email'] || ''));
-  
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 1').setTitle('Delivery Address Line 1').setValue(data['Customer Address Line 1'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 2').setTitle('Delivery Address Line 2').setValue(data['Customer Address Line 2'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address City').setTitle('Delivery City').setValue(data['Customer Address City'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address State').setTitle('Delivery State').setValue(data['Customer Address State'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address ZIP').setTitle('Delivery ZIP').setValue(data['Customer Address ZIP'] || ''));
-  
-  // Date and Time fields with .setRequired(true) as supported
-  const deliveryDatePicker = CardService.newDatePicker().setFieldName("Delivery Date").setTitle("Delivery Date").setValueInMsSinceEpoch(_parseDateToMsEpoch(data['Delivery Date'])).setRequired(true);
-  section.addWidget(deliveryDatePicker);
-
-  const deliveryTimeInput = CardService.newSelectionInput().setFieldName('Delivery Time').setTitle('Delivery Time').setRequired(true);
-  deliveryTimeInput.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
-  const selectedTime = data['Delivery Time'] || '';
-  const startHour = 5; const endHour = 23; // 5 AM to 11 PM
-  for (let h = startHour; h <= endHour; h++) { // Loop includes endHour for 11 PM
+  section.addWidget(CardService.newDatePicker().setFieldName("Delivery Date").setTitle("Delivery Date").setValueInMsSinceEpoch(_parseDateToMsEpoch(data['Delivery Date'])));
+  const deliveryTimeInput = CardService.newSelectionInput().setFieldName('Delivery Time').setTitle('Delivery Time');
+  // Defensive check for setType to address persistent errors
+  if (typeof deliveryTimeInput.setType === 'function') {
+      deliveryTimeInput.setType(CardService.SelectionInputType.DROPDOWN); 
+  } else {
+      console.warn("setType method missing on deliveryTimeInput in buildReviewContactCard.");
+  }
+  const selectedTime = data['Delivery Time'] || ''; 
+  const startHour = 5; const endHour = 23; 
+  for (let h = startHour; h <= endHour; h++) { 
     for (let m = 0; m < 60; m += 15) {
       const time = Utilities.formatDate(new Date(2000, 0, 1, h, m), Session.getScriptTimeZone(), 'h:mm a');
-      deliveryTimeInput.addItem(time, time, selectedTime === time);
+      deliveryTimeInput.addItem(time, time, selectedTime === time); 
     }
   }
   section.addWidget(deliveryTimeInput);
 
+  section.addWidget(CardService.newTextInput().setFieldName('Contact Person').setTitle('Delivery Contact Name').setValue(data['Contact Person'] || data['Customer Name'] || ''));
+  section.addWidget(CardService.newTextInput().setFieldName('Contact Phone').setTitle('Delivery Contact Phone').setValue(_formatPhone(data['Contact Phone'] || data['Customer Address Phone'] || '')));
+  // Removed Delivery Contact Email field as requested
+  // section.addWidget(CardService.newTextInput().setFieldName('Contact Email').setTitle('Delivery Contact Email').setValue(data['Contact Email'] || data['Customer Address Email'] || ''));
+  
   const utensilsValue = data['Include Utensils?'] || 'Unknown';
   const utensilsInput = CardService.newSelectionInput().setFieldName('Include Utensils?').setTitle('Include Utensils?');
-  utensilsInput.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
+  if (typeof utensilsInput.setType === 'function') { // Defensive check
+      utensilsInput.setType(CardService.SelectionInputType.DROPDOWN); 
+  } else {
+      console.warn("setType method missing on utensilsInput in buildReviewContactCard.");
+  }
   utensilsInput.addItem('Yes', 'Yes', utensilsValue === 'Yes').addItem('No', 'No', utensilsValue === 'No').addItem('Unknown', 'Unknown', utensilsValue !== 'Yes' && utensilsValue !== 'No');
   section.addWidget(utensilsInput);
   if (utensilsValue === 'Yes') {
     section.addWidget(CardService.newTextInput().setFieldName('If yes: how many?').setTitle('How many utensils?').setValue(data['If yes: how many?'] || ''));
   }
 
-  section.addWidget(CardService.newTextInput().setFieldName('Client').setTitle('Client (based on email domain)').setValue(data['Client'] || 'Unknown'));
-  
-  // Action with validation
+  // The 'Client' field is already displayed near Customer Name as per new ordering.
+
+  // Action that triggers server-side validation
   const action = CardService.newAction().setFunctionName('handleContactInfoSubmitWithValidation').setParameters({ orderNum: orderNum });
   const footer = CardService.newFixedFooter().setPrimaryButton(CardService.newTextButton().setText('Confirm Contact & Proceed to Items').setOnClickAction(action).setTextButtonStyle(CardService.TextButtonStyle.FILLED));
   return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle('Step 1: Customer & Order Details')).addSection(section).setFixedFooter(footer).build();
@@ -239,7 +263,8 @@ function handleContactInfoSubmitWithValidation(e) {
   // Retrieve values safely using the new helper function from Utils.gs
   const customerName = _getFormInputValue(inputs, 'Customer Name');
   const contactPerson = _getFormInputValue(inputs, 'Contact Person');
-  const contactPhone = _getFormInputValue(inputs, 'Contact Phone');
+  // Use the new field names for retrieval here
+  const customerPhone = _getFormInputValue(inputs, 'Customer Address Phone'); // Renamed field
   const customerAddressLine1 = _getFormInputValue(inputs, 'Customer Address Line 1');
   const deliveryDateMs = _getFormInputValue(inputs, 'Delivery Date', true); // Pass true for date inputs
   const deliveryTimeStr = _getFormInputValue(inputs, 'Delivery Time');
@@ -251,10 +276,11 @@ function handleContactInfoSubmitWithValidation(e) {
     validationMessages.push("• Delivery Date and Time are required.");
   }
   if (!customerName && !contactPerson) {
-    validationMessages.push("• Either 'Customer Name (for invoice)' or 'Delivery Contact Person' is required.");
+    validationMessages.push("• Either 'Customer Name' or 'Delivery Contact Name' is required.");
   }
-  if (!contactPhone) { // Ensure a phone number is provided for delivery contact
-    validationMessages.push("• A 'Delivery Contact Phone' number is required.");
+  // Validate against the 'Customer Phone' field as it's now primary.
+  if (!customerPhone && !contactPerson) { // Changed to check Customer Phone primarily
+    validationMessages.push("• A 'Customer Phone' or 'Delivery Contact Name' (if no customer phone) is required.");
   }
   if (!customerAddressLine1) {
     validationMessages.push("• 'Delivery Address Line 1' is required.");
@@ -382,7 +408,12 @@ function buildItemMappingAndPricingCard(e) {
       itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_qty_${index}`).setTitle('Unit Quantity').setValue(item.extracted_main_quantity || '1'));
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`AI Match Confidence: ${item.match_confidence || 'N/A'}`));
       const qbItemDropdown = CardService.newSelectionInput().setFieldName(`item_qb_sku_${index}`).setTitle('Item');
-      qbItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
+      if (qbItemDropdown && typeof qbItemDropdown.setType === 'function') {
+        qbItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); 
+      } else {
+        console.warn(`setType method missing on qbItemDropdown for item ${index}.`);
+      }
+      
       let preSelected = false;
       masterQBItems.forEach(masterItem => {
         if (!masterItem.SKU) return;
@@ -414,7 +445,48 @@ function buildItemMappingAndPricingCard(e) {
       itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_kitchen_notes_${index}`).setTitle('Confirmed Flavors/Notes for Kitchen').setValue(item.parsed_flavors_or_details || '').setMultiline(true));
       const initialPrice = masterMatchDetails ? (masterMatchDetails.Price !== undefined ? masterMatchDetails.Price : 0) : 0;
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Unit Price:</b> $${initialPrice.toFixed(2)}`));
-      itemsDisplaySection.addWidget(CardService.newSelectionInput().setFieldName(`item_remove_${index}`).setTitle("Remove this item?").setType(CardService.SelectionInputType.CHECKBOX).addItem("Yes, remove", "true", false));
+      
+      // MODIFICATION START: Robust handling for "Remove this item?" widget type
+      const removeItemSelectionInput = CardService.newSelectionInput()
+        .setFieldName(`item_remove_${index}`)
+        .setTitle("Remove this item?");
+
+      try {
+        if (removeItemSelectionInput && typeof removeItemSelectionInput.setType === 'function') {
+          // Attempt to use CHECKBOX, but be ready to fall back if CHECKBOX enum or setType call fails
+          if (CardService && CardService.SelectionInputType && CardService.SelectionInputType.CHECKBOX) {
+            removeItemSelectionInput.setType(CardService.SelectionInputType.CHECKBOX);
+          } else {
+            console.warn(`CardService.SelectionInputType.CHECKBOX is not available for item_remove_${index}. Falling back to DROPDOWN.`);
+            if (CardService && CardService.SelectionInputType && CardService.SelectionInputType.DROPDOWN) {
+              removeItemSelectionInput.setType(CardService.SelectionInputType.DROPDOWN);
+            } else {
+               console.error(`CardService.SelectionInputType.DROPDOWN also not available for item_remove_${index}. Widget will use default type.`);
+            }
+          }
+        } else {
+          console.warn(`setType method missing on removeItemSelectionInput for item_remove_${index}. Widget will use default type.`);
+        }
+      } catch (e) {
+        console.error(`Error during setType for item_remove_${index} (attempting CHECKBOX): ${e.toString()}. Attempting to fallback to DROPDOWN.`);
+        // Fallback attempt to DROPDOWN if the CHECKBOX attempt failed
+        try {
+          if (removeItemSelectionInput && typeof removeItemSelectionInput.setType === 'function' &&
+              CardService && CardService.SelectionInputType && CardService.SelectionInputType.DROPDOWN) {
+            removeItemSelectionInput.setType(CardService.SelectionInputType.DROPDOWN);
+            console.log(`Successfully fell back to DROPDOWN for item_remove_${index}.`);
+          } else {
+            console.warn(`Could not fallback to DROPDOWN for item_remove_${index} (setType missing or DROPDOWN enum unavailable). Widget will use default type.`);
+          }
+        } catch (e2) {
+          console.error(`Error during setType fallback to DROPDOWN for item_remove_${index}: ${e2.toString()}. Widget will use default type.`);
+        }
+      }
+      
+      removeItemSelectionInput.addItem("Yes, remove", "true", false);
+      itemsDisplaySection.addWidget(removeItemSelectionInput);
+      // MODIFICATION END
+      
       itemsDisplaySection.addWidget(CardService.newDivider());
     });
   }
@@ -422,7 +494,11 @@ function buildItemMappingAndPricingCard(e) {
 
   const manualAddSection = CardService.newCardSection().setHeader("Manually Add New Item").setCollapsible(true);
   const newItemDropdown = CardService.newSelectionInput().setFieldName("new_item_qb_sku").setTitle("Select Item");
-  newItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
+  if (newItemDropdown && typeof newItemDropdown.setType === 'function') { // Defensive check
+    newItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); 
+  } else {
+    console.warn("setType method missing on newItemDropdown.");
+  }
   newItemDropdown.addItem("--- Select Item to Add ---", "", true);
   masterQBItems.forEach(masterItem => {
     if (!masterItem.SKU) return;
@@ -436,7 +512,6 @@ function buildItemMappingAndPricingCard(e) {
 
   // Additional Charges Section
   const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges (Optional)").setCollapsible(true);
-  // Pre-populate tip amount calculated earlier
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue((orderData['TipAmount'] || 0).toFixed(2)));
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_amount").setTitle("Other Charges Amount ($)").setValue("0.00"));
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_description").setTitle("Other Charges Description"));
@@ -528,11 +603,15 @@ function buildInvoiceActionsCard(e) {
   const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
   if (orderDataString) {
     const orderData = JSON.parse(orderDataString);
-    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Ordering Person:</b> " + (orderData['Ordering Person Name'] || 'N/A') + " (" + (orderData['Ordering Person Email'] || 'N/A') + ")</i>"));
+    // Removed display of 'Ordering Person' as it's not needed by user.
+
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Name (for Invoice):</b> " + (orderData['Customer Name'] || 'N/A') + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Phone:</b> " + _formatPhone(orderData['Customer Address Phone']) || 'N/A' + "</i>")); // Added Customer Address Phone
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Email:</b> " + (orderData['Customer Address Email'] || 'N/A') + "</i>")); // Added Customer Address Email
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Contact:</b> " + (orderData['Contact Person'] || 'N/A') + "</i>"));
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Phone:</b> " + _formatPhone(orderData['Contact Phone']) || 'N/A' + "</i>"));
-    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Email:</b> " + (orderData['Contact Email'] || 'N/A') + "</i>"));
+    // Removed display of Delivery Contact Email as it's no longer a field.
+    // orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Email:</b> " + (orderData['Contact Email'] || 'N/A') + "</i>"));
 
     let address = "<i><b>Address:</b> ";
     if (orderData['Customer Address Line 1']) address += orderData['Customer Address Line 1'];
