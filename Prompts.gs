@@ -1,4 +1,4 @@
-// Prompts.gs - V22
+// Prompts.gs
 // This file contains all Gemini AI prompts used for data extraction and matching.
 
 /**

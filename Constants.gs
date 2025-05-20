@@ -1,4 +1,4 @@
-// Constants.gs - V14
+// Constants.gs
 // This file contains all global constants and configuration settings for the Google Workspace Add-on.
 
 // === CONFIGURATION ===

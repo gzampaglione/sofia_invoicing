@@ -1,4 +1,4 @@
-// Utils.gs - V15
+// Utils.gs
 // This file contains general utility functions that are not directly tied to the CardService UI flow
 // or specific Gmail actions, but are used across different parts of the add-on.
 
@@ -179,32 +179,53 @@ function _combineDateAndTime(dateMs, timeStr) {
 }
 
 /**
- * Matches an email address to a predefined client based on rules.
- * @param {string} senderEmailField The full sender email string (e.g., "Display Name <email@example.com>").
- * @returns {string} The matched client name or 'Unknown'.
- */
+ * Matches an email address to a predefined client based on rules.
+ * Includes enhanced logging for troubleshooting.
+ * @param {string} senderEmailField The full sender email string (e.g., "Display Name <email@example.com>").
+ * @returns {string} The matched client name or 'Unknown'.
+ */
 function _matchClient(senderEmailField) {
-  if (!senderEmailField) return 'Unknown';
-  let emailAddress = senderEmailField; // Assume it's already just the email
-  const emailMatch = senderEmailField.match(/<([^>]+)>/);
-  if (emailMatch && emailMatch[1]) {
-    emailAddress = emailMatch[1];
-  }
-  
-  const emailLower = emailAddress.toLowerCase().trim();
-  console.log("Matching client for extracted email: " + emailLower);
+  // Log the CLIENT_RULES_LOOKUP as it's seen by this function at runtime
+  // Ensure Constants.gs is saved and its values are up-to-date if this log doesn't match your expectations.
+  console.log("_matchClient: CLIENT_RULES_LOOKUP being used:", JSON.stringify(CLIENT_RULES_LOOKUP));
+  console.log("_matchClient: Received senderEmailField:", senderEmailField);
 
-  // CLIENT_RULES_LOOKUP is sorted by rule length, descending.
+  if (!senderEmailField) {
+    console.log("_matchClient: senderEmailField is null or empty, returning 'Unknown'.");
+    return 'Unknown';
+  }
+
+  const emailAddress = _extractActualEmail(senderEmailField); // Uses your existing helper
+  console.log("_matchClient: Extracted emailAddress with _extractActualEmail:", emailAddress);
+
+  if (!emailAddress) { // Add a check for empty extracted email
+    console.log("_matchClient: _extractActualEmail returned empty or null, returning 'Unknown'.");
+    return 'Unknown';
+  }
+
+  const emailLower = emailAddress.toLowerCase().trim();
+  console.log("_matchClient: Normalized emailLower for matching:", emailLower);
+
+  // CLIENT_RULES_LOOKUP should be pre-sorted by rule length (descending) in Constants.gs
   for (let i = 0; i < CLIENT_RULES_LOOKUP.length; i++) {
-    const clientRule = CLIENT_RULES_LOOKUP[i];
-    const rule = clientRule.rule.toLowerCase().trim();
-    const name = clientRule.clientName.trim();
-    if (rule && emailLower.includes(rule)) {  
-      console.log("Client matched: " + name + " for email " + emailAddress + " with rule " + rule);
-      return name;  
+    const clientRuleEntry = CLIENT_RULES_LOOKUP[i];
+    if (!clientRuleEntry || !clientRuleEntry.rule || !clientRuleEntry.clientName) {
+      console.warn("_matchClient: Skipping invalid client rule entry at index " + i + ": " + JSON.stringify(clientRuleEntry));
+      continue;
+    }
+    const rule = clientRuleEntry.rule.toLowerCase().trim();
+    const clientName = clientRuleEntry.clientName.trim();
+
+    console.log(`_matchClient: Checking rule: "${rule}" (for client: "${clientName}") against email: "${emailLower}"`);
+    
+    // The core matching logic: does the lowercase email *include* the lowercase rule string?
+    if (rule && emailLower.includes(rule)) {
+      console.log(`_matchClient: Match found! Client: "${clientName}" for email "${emailAddress}" with rule "${rule}"`);
+      return clientName;
     }
   }
-  console.log("No client match for email: " + emailAddress);
+
+  console.log("_matchClient: No client match found for email: " + emailAddress);
   return 'Unknown';
 }
 
@@ -502,50 +523,230 @@ function populateInvoiceSheet(orderNum) {
 
 /**
  * Creates a PDF of the populated invoice sheet and prepares a draft email reply with it attached.
+ * Attempts to get the sheet with retries. Proceeds to UrlFetch PDF generation if GID can be obtained,
+ * even if the sheet object reports 'getAs' as missing (as UrlFetch version doesn't use it).
  * @param {string} orderNum The order number.
- * @param {string} populatedSheetSpreadsheetId The ID of the spreadsheet containing the populated invoice sheet.
+ * @param {string} populatedSheetSpreadsheetId The ID of the spreadsheet.
  * @param {string} populatedSheetName The name of the populated invoice sheet.
- * @returns {{pdfBlob: GoogleAppsScript.Base.Blob, draft: GoogleAppsScript.Gmail.GmailDraft, draftId: string}} Object containing PDF blob, draft object, and draft ID.
- * @throws {Error} If order data or sheets are not found, or PDF/email creation fails.
+ * @returns {{pdfBlob: GoogleAppsScript.Base.Blob, draft: GoogleAppsScript.Gmail.GmailDraft, draftId: string}}
+ * @throws {Error} If processing fails, including if a sheet GID cannot be obtained.
  */
 function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, populatedSheetName) {
-  const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
-  if (!orderDataString) { console.error("PDFEmail: Order data for " + orderNum + " not found."); throw new Error("Order data not found for PDF/email creation.");}
-  const orderData = JSON.parse(orderDataString);
+  const userProps = PropertiesService.getUserProperties();
+  const orderDataString = userProps.getProperty(orderNum);
+  if (!orderDataString) {
+    console.error(`PDFEmail: Order data for ${orderNum} not found in createPdfAndPrepareEmailReply.`);
+    throw new Error("Order data not found for PDF/email creation.");
+  }
+  const orderData = JSON.parse(orderDataString); // Parsed once for use here and to pass to helper
+
   try {
-    console.log(`PDFEmail: Opening spreadsheet ID: ${populatedSheetSpreadsheetId}, Sheet: ${populatedSheetName}`);
-    const spreadsheet = SpreadsheetApp.openById(populatedSheetSpreadsheetId); const sheetToExport = spreadsheet.getSheetByName(populatedSheetName);
-    if (!sheetToExport) { console.error(`PDFEmail: Sheet "${populatedSheetName}" not found.`); throw new Error("Populated invoice sheet not found for PDF generation."); }
+    console.log(`PDFEmail: Initiating PDF creation for order ${orderNum}. Target Spreadsheet ID: ${populatedSheetSpreadsheetId}, Target Sheet Name: "${populatedSheetName}"`);
+    const spreadsheet = SpreadsheetApp.openById(populatedSheetSpreadsheetId); 
+    if (!spreadsheet) {
+      console.error(`PDFEmail: Critical - Failed to open spreadsheet with ID: ${populatedSheetSpreadsheetId}. Cannot proceed.`);
+      throw new Error("Failed to open spreadsheet for PDF generation. Check Spreadsheet ID and permissions.");
+    }
+    console.log(`PDFEmail: Spreadsheet "${spreadsheet.getName()}" (ID: ${spreadsheet.getId()}) opened successfully.`);
+
+    let sheetToExport = null;     // We still need the sheet object for its name and GID
+    let sheetGidForExport = null; // This is what the UrlFetch method critically needs
+    let attempts = 0;
+    const MAX_ATTEMPTS = 3;     // Number of retries
+
+    while (attempts < MAX_ATTEMPTS) {
+        attempts++;
+        console.log(`PDFEmail: Attempt ${attempts}/${MAX_ATTEMPTS} to getSheetByName("${populatedSheetName}").`);
+        let currentSheetTry = spreadsheet.getSheetByName(populatedSheetName);
+        
+        if (currentSheetTry) {
+            let currentGid = null;
+            try {
+                currentGid = currentSheetTry.getSheetId(); // Attempt to get GID
+            } catch (gidError) {
+                console.warn(`PDFEmail: Attempt ${attempts} - Error getting GID for sheet named "${currentSheetTry.getName()}": ${gidError.message}`);
+            }
+
+            const hasGetAs = typeof currentSheetTry.getAs === 'function'; // Still useful to log this
+            console.log(`PDFEmail: Attempt ${attempts} - Sheet named "${currentSheetTry.getName()}" found. Typeof: ${typeof currentSheetTry}. Has 'getAs' method: ${hasGetAs}. GID: ${currentGid}`);
+            
+            if (currentGid !== null && currentGid !== undefined) { // Primary check is for a valid GID
+                sheetToExport = currentSheetTry; // Store the sheet object
+                sheetGidForExport = currentGid;  // Store the GID
+                console.log(`PDFEmail: Successfully obtained sheet object with GID ${sheetGidForExport} on attempt ${attempts}. 'getAs' functionality is ${hasGetAs ? 'present' : 'MISSING (will use UrlFetch)'}.`);
+                // We don't break here if getAs is missing, because UrlFetch doesn't need it. We just need GID.
+                break; // Exit loop, valid GID obtained
+            } else {
+                console.warn(`PDFEmail: Attempt ${attempts} - Sheet object obtained for "${currentSheetTry.getName()}" but GID is null/undefined or failed to retrieve. Activating and will retry if attempts remain.`);
+                try {
+                    spreadsheet.setActiveSheet(currentSheetTry);
+                    SpreadsheetApp.flush();
+                    console.log(`PDFEmail: Attempt ${attempts} - Activated sheet "${currentSheetTry.getName()}".`);
+                } catch (activateErr) {
+                    console.warn(`PDFEmail: Attempt ${attempts} - Could not activate sheet "${currentSheetTry.getName()}". Error: ${activateErr.message}.`);
+                }
+            }
+        } else {
+             console.warn(`PDFEmail: Attempt ${attempts} - Sheet named "${populatedSheetName}" not found in spreadsheet "${spreadsheet.getName()}".`);
+        }
+
+        if (attempts < MAX_ATTEMPTS && (sheetGidForExport === null || sheetGidForExport === undefined) ) { // Continue retrying if GID not found
+            const delayMs = 1000 * attempts; 
+            console.log(`PDFEmail: Waiting ${delayMs}ms before next attempt to get sheet.`);
+            Utilities.sleep(delayMs);
+        }
+    } // End of while loop
     
-    console.log(`PDFEmail: Sheet "${populatedSheetName}" found. Hiding others temporarily for PDF generation.`);
-    const allSheets = spreadsheet.getSheets(); const hiddenSheetIds = [];
-    allSheets.forEach(sheet => { if (sheet.getSheetId() !== sheetToExport.getSheetId()) { sheet.hideSheet(); hiddenSheetIds.push(sheet.getSheetId()); }});
-    SpreadsheetApp.flush(); // Ensure changes are applied before PDF generation
+    if (!sheetToExport || sheetGidForExport === null || sheetGidForExport === undefined) { 
+      const availableSheets = spreadsheet.getSheets().map(s => s.getName()).join(', ');
+      console.error(`PDFEmail: Critical - After ${MAX_ATTEMPTS} attempts, could not reliably obtain sheet GID for "${populatedSheetName}". Available sheets: [${availableSheets}]. Cannot generate PDF.`);
+      throw new Error(`The sheet "${populatedSheetName}" could not be reliably processed to get its GID for PDF export after retries.`);
+    }
     
-    // Export only the specific sheet
-    const pdfBlob = sheetToExport.getAs('application/pdf').setName(`${populatedSheetName}.pdf`); 
-    console.log(`PDFEmail: PDF blob created: ${pdfBlob.getName()}`);
-    
-    // Unhide sheets immediately after PDF generation
-    hiddenSheetIds.forEach(id => { const sheet = allSheets.find(s => s.getSheetId() === id); if (sheet) sheet.showSheet(); });
-    SpreadsheetApp.flush(); // Ensure changes are applied
-    console.log("PDFEmail: Sheets unhidden.");
-    
-    const threadId = orderData.threadId;
-    if (!threadId) { console.error("PDFEmail: Thread ID missing for order " + orderNum); throw new Error("Original email thread ID not found."); }
+    // If a sheet object and its GID are obtained, proceed to generate PDF using the UrlFetch helper
+    console.log(`PDFEmail: Proceeding to call generatePdfFromSheet (UrlFetch version) with sheet GID: ${sheetGidForExport} for sheet named "${sheetToExport.getName()}".`);
+    // Pass sheetToExport for context (like name, GID), populatedSheetName for the PDF name, orderData, and the spreadsheet object.
+    return generatePdfFromSheet(sheetToExport, populatedSheetName, orderData, spreadsheet);
+
+  } catch (e) { 
+    console.error(`Error in createPdfAndPrepareEmailReply for order ${orderNum}: ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`); 
+    throw new Error(`Failed to create PDF or prepare email for order ${orderNum}: ${e.message}`); 
+  }
+}
+
+/**
+ * Helper to safely get all sheets from a spreadsheet object.
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} spreadsheet The spreadsheet object.
+ * @return {Array<GoogleAppsScript.Spreadsheet.Sheet>} Array of sheet objects, or empty array if error.
+ */
+function allSheetsFromSpreadsheet(spreadsheet) {
+    try {
+        if (spreadsheet && typeof spreadsheet.getSheets === 'function') {
+            return spreadsheet.getSheets();
+        }
+        console.warn("allSheetsFromSpreadsheet: Spreadsheet object was null or did not have getSheets method.");
+        return [];
+    } catch (e) {
+        console.error("Error in allSheetsFromSpreadsheet: " + e.toString());
+        return [];
+    }
+}
+
+/**
+ * Helper function to generate a PDF from a given sheet using UrlFetchApp, 
+ * and prepare an email draft with the PDF attached.
+ * @param {GoogleAppsScript.Spreadsheet.Sheet} sheetForPdf The Sheet object (used to get GID and for context like name).
+ * @param {string} pdfSheetName The desired name for the PDF file (usually the sheet name from sheetForPdf.getName()).
+ * @param {object} orderDataForEmail The order data object containing details for the email.
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} spreadsheet The parent spreadsheet object (used for its ID).
+ * @returns {{pdfBlob: GoogleAppsScript.Base.Blob, draft: GoogleAppsScript.Gmail.GmailDraft, draftId: string}}
+ * @throws {Error} If PDF generation or email drafting fails.
+ */
+function generatePdfFromSheet(sheetForPdf, pdfSheetName, orderDataForEmail, spreadsheet) {
+    const orderNum = orderDataForEmail.orderNum; // Assuming orderNum is in orderDataForEmail
+    const spreadsheetId = spreadsheet.getId();
+    const sheetGid = sheetForPdf.getSheetId(); // GID of the sheet to export
+
+    console.log(`generatePdfFromSheet: Attempting PDF generation for sheet: "${sheetForPdf.getName()}" (GID: ${sheetGid}) in Spreadsheet ID: ${spreadsheetId} using UrlFetchApp.`);
+
+    let pdfBlob;
+    try {
+        // Construct the PDF export URL
+        // Common PDF export parameters are included; adjust as needed for your layout.
+        const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export` +
+                             `?format=pdf` +
+                             `&gid=${sheetGid}` +
+                             `&scale=4` + // 1=Normal, 2=Fit to Width, 3=Fit to Height, 4=Fit to Page
+                             `&top_margin=0.50` +  // Inches
+                             `&bottom_margin=0.50` +
+                             `&left_margin=0.50` +
+                             `&right_margin=0.50` +
+                             `&horizontal_alignment=CENTER` +
+                             `&vertical_alignment=TOP` +
+                             `&gridlines=false` + 
+                             `&printnotes=false` + 
+                             `&pageorder=1` + // 1=down_then_over, 2=over_then_down
+                             `&sheetnames=false` + // Do not print sheet names
+                             `&printtitle=false` + // Do not print spreadsheet title
+                             `&attachment=true` +  // Crucial for getting the file content
+                             `&portrait=true` +    // Page orientation
+                             // `&fitw=true` +     // Fit to width (can conflict with scale, use one or the other usually)
+                             `&size=letter`;       // Paper size (letter, A4, etc.)
+
+        console.log(`generatePdfFromSheet: Constructed PDF Export URL (first 150 chars, excludes token): ${pdfExportUrl.substring(0,150)}...`);
+        
+        const response = UrlFetchApp.fetch(pdfExportUrl, {
+            headers: {
+                'Authorization': `Bearer ${ScriptApp.getOAuthToken()}` // Necessary for accessing the export URL
+            },
+            muteHttpExceptions: true // To get error response content instead of throwing an immediate exception
+        });
+
+        const responseCode = response.getResponseCode();
+        if (responseCode === 200) {
+            pdfBlob = response.getBlob().setName(`${pdfSheetName}.pdf`); // Use the passed pdfSheetName
+            console.log(`generatePdfFromSheet: PDF blob created via UrlFetch: ${pdfBlob.getName()}, Size: ${pdfBlob.getBytes().length} bytes.`);
+        } else {
+            const errorContent = response.getContentText();
+            console.error(`generatePdfFromSheet: UrlFetch PDF export failed for sheet "${pdfSheetName}". Code: ${responseCode}. Response: ${errorContent.substring(0, 500)}`);
+            throw new Error(`PDF export via UrlFetch failed with HTTP code ${responseCode}.`);
+        }
+    } catch (e) {
+        console.error(`generatePdfFromSheet: Exception during UrlFetch PDF export for order ${orderNum}, sheet "${pdfSheetName}": ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`);
+        throw new Error(`Failed to generate PDF via UrlFetch for sheet "${pdfSheetName}": ${e.message}`);
+    }
+
+    // --- Email Drafting Part ---
+    // (This part remains the same as your last working version or my previous suggestion for it)
+    const threadId = orderDataForEmail.threadId;
+    if (!threadId) { 
+      console.error(`generatePdfFromSheet: Thread ID missing for order ${orderNum}`);
+      throw new Error("Original email thread ID not found for reply."); 
+    }
     const thread = GmailApp.getThreadById(threadId);
-    if (!thread) { console.error("PDFEmail: Could not retrieve Gmail thread ID: " + threadId); throw new Error("Could not retrieve original email thread."); }
-    const messages = thread.getMessages(); const messageToReplyTo = messages[messages.length - 1]; // Reply to the last message in the thread
+    if (!thread) { 
+      console.error(`generatePdfFromSheet: Could not retrieve Gmail thread ID: ${threadId} for order ${orderNum}`);
+      throw new Error("Could not retrieve original email thread."); 
+    }
+    const messages = thread.getMessages(); 
+    const messageToReplyTo = messages[messages.length - 1]; 
     
-    const recipient = orderData['Contact Email'] || orderData['Customer Address Email'] || orderData['Ordering Person Email']; // Prioritize Contact Email if explicitly set
-    const subject = `Re: Catering Order Confirmation - ${orderNum}`;
-    const body = `Dear ${orderData['Contact Person'] || orderData['Customer Name'] || 'Valued Customer'},\n\nPlease find attached the invoice for your recent catering order (${orderNum}).\n\nDelivery is scheduled for ${orderData['Delivery Date']} around ${data['Delivery Time']}.\n\nThank you for your business!\n\nBest regards,\n[Your Company Name]`;
+    const recipient = orderDataForEmail['Contact Email'] || orderDataForEmail['Customer Address Email'] || orderDataForEmail['Internal Sender Email'] || messageToReplyTo.getFrom();
+    const subject = `Catering Order Confirmed & Invoice - El Merkury - Order #${orderNum}`;
     
-    console.log(`PDFEmail: Preparing draft reply to: ${recipient}`);
-    const draft = messageToReplyTo.createDraftReply(body, { htmlBody: body.replace(/\n/g, '<br>'), attachments: [pdfBlob], to: recipient });
-    console.log("PDFEmail: Draft email created. ID: " + draft.getId());
+    let deliveryDateForEmail = "Not specified";
+    if (orderDataForEmail['Delivery Date']) {
+        try {
+            let dateParts = orderDataForEmail['Delivery Date'].split(/[-\/]/);
+            let year, month, day;
+            if (dateParts.length === 3) {
+                if (dateParts[0].length === 4) { 
+                    year = parseInt(dateParts[0]); month = parseInt(dateParts[1]) - 1; day = parseInt(dateParts[2]);
+                } else { 
+                    year = parseInt(dateParts[2]); month = parseInt(dateParts[0]) - 1; day = parseInt(dateParts[1]);
+                }
+                const tempDate = new Date(year, month, day);
+                deliveryDateForEmail = Utilities.formatDate(tempDate, Session.getScriptTimeZone(), "EEEE, MMMM d, yyyy");
+            } else { 
+                deliveryDateForEmail = orderDataForEmail['Delivery Date']; 
+            }
+        } catch (dateParseErr) {
+            console.warn(`generatePdfFromSheet: Error parsing deliveryDateForEmail for order ${orderNum}: "${orderDataForEmail['Delivery Date']}". Error: ${dateParseErr}. Using raw value.`);
+            deliveryDateForEmail = orderDataForEmail['Delivery Date']; 
+        }
+    }
+    const deliveryTimeForEmail = orderDataForEmail['Delivery Time'] ? _normalizeTimeFormat(orderDataForEmail['Delivery Time']) : "Not specified";
+
+    const body = `Dear ${orderDataForEmail['Contact Person'] || orderDataForEmail['Customer Name'] || 'Valued Customer'},\n\nThank you for your El Merkury catering order!\n\nPlease find attached the invoice (#${orderNum}) for your order.\n\nDelivery is scheduled for ${deliveryDateForEmail} around ${deliveryTimeForEmail}.\n\nWe look forward to serving you!\n\nBest regards,\nSofia & The El Merkury Team`;
+    
+    console.log(`generatePdfFromSheet: Preparing draft reply to: ${recipient} for order ${orderNum}. Subject: ${subject}`);
+    const draft = messageToReplyTo.createDraftReply(body, { 
+        htmlBody: body.replace(/\n/g, '<br>'), 
+        attachments: [pdfBlob], 
+        to: recipient,
+    });
+    console.log(`generatePdfFromSheet: Draft email created for order ${orderNum}. ID: ${draft.getId()}`);
     return { pdfBlob: pdfBlob, draft: draft, draftId: draft.getId() };
-  } catch (e) { console.error("Error in createPdfAndPrepareEmailReply for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to create PDF or prepare email: " + e.message); }
 }
 
 /**
@@ -557,4 +758,125 @@ function handleClearAndClose(e) {
     const orderNum = e.parameters.orderNum;
     if (orderNum) { PropertiesService.getUserProperties().deleteProperty(orderNum); console.log("Cleared data for orderNum: " + orderNum); }
     return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popToRoot()).setNotification(CardService.newNotification().setText("Order data cleared. Add-on is ready for the next email.")).build();
+}
+
+/**
+ * Normalizes a time string to "h:mm a" format (e.g., "7:00 PM").
+ * Attempts to parse various common time string inputs.
+ * @param {string} timeString The time string to normalize.
+ * @returns {string} The normalized time string in "h:mm a" format, or the original trimmed string if parsing/formatting fails.
+ */
+function _normalizeTimeFormat(timeString) {
+  if (!timeString || typeof timeString !== 'string' || timeString.trim() === "") {
+    return ""; // Return empty if input is empty or not a string
+  }
+  const trimmedTime = timeString.trim();
+
+  // Attempt to parse the time string into a Date object.
+  // Prepending a fixed date helps JavaScript's Date constructor parse time-only strings.
+  // Common formats like "7:00 PM", "7pm", "19:00" are often handled.
+  let dateObj = new Date(`01/01/2000 ${trimmedTime}`);
+
+  // Check if the direct parsing worked
+  if (isNaN(dateObj.getTime())) {
+    // Direct parsing failed, try specific regexes for common patterns
+    // to construct the date object more manually.
+    let hours = -1;
+    let minutes = 0;
+    let ampmDesignator = null; // AM/PM
+
+    // Try formats like "7:30pm", "07:30PM", "7:30", "19:30"
+    const complexMatch = trimmedTime.match(/^(\d{1,2})(?:[:.](\d{2}))?\s*(AM|PM)?$/i);
+    if (complexMatch) {
+      hours = parseInt(complexMatch[1]);
+      minutes = complexMatch[2] ? parseInt(complexMatch[2]) : 0; // Default to 00 if minutes are not present
+      ampmDesignator = complexMatch[3] ? complexMatch[3].toUpperCase() : null;
+
+      // Validate hours and minutes
+      if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+        return trimmedTime; // Invalid time components
+      }
+
+      // If AM/PM is present, adjust hours for 24-hour format for Date constructor
+      if (ampmDesignator) {
+        if (ampmDesignator === 'PM' && hours > 0 && hours < 12) {
+          hours += 12;
+        } else if (ampmDesignator === 'AM' && hours === 12) { // Midnight case: 12 AM is 00 hours
+          hours = 0;
+        }
+      }
+      // If no AM/PM and hours are like 1-11, it's ambiguous without more context,
+      // but Date constructor might assume AM or based on current time.
+      // We assume valid 24-hour if AM/PM missing and hours >=0 <=23.
+      dateObj = new Date(2000, 0, 1, hours, minutes);
+    } else {
+      // If no regex matched, return the original trimmed string
+      return trimmedTime;
+    }
+  }
+
+  // If dateObj is now valid (either from direct parse or regex-assisted parse)
+  if (!isNaN(dateObj.getTime())) {
+    try {
+      // Format the valid Date object to the desired "h:mm a" string
+      return Utilities.formatDate(dateObj, Session.getScriptTimeZone(), 'h:mm a');
+    } catch (e) {
+      // Fallback if formatting fails for an unexpected reason
+      console.warn("Could not format dateObj for time: " + trimmedTime + ", Error: " + e.toString());
+      return trimmedTime; // Return original trimmed string on formatting error
+    }
+  }
+
+  // If all parsing attempts failed
+  return trimmedTime;
+}
+
+/**
+ * Attempts to find the best match for an AI-identified flavor string within a list of standard flavor strings.
+ * Prioritizes exact match (case-insensitive, trimmed), then checks if a standard flavor includes the AI flavor,
+ * then if the AI flavor includes a standard flavor.
+ * @param {string} aiFlavorString The flavor string identified by the AI from the email.
+ * @param {Array<string>} itemStandardFlavorsArray An array of standard flavor strings for the item.
+ * @returns {string|null} The matching standard flavor string from the array, or null if no good match is found.
+ */
+function _findBestStandardFlavorMatch(aiFlavorString, itemStandardFlavorsArray) {
+  if (!aiFlavorString || !itemStandardFlavorsArray || itemStandardFlavorsArray.length === 0) {
+    return null;
+  }
+
+  const normalizedAiFlavor = aiFlavorString.toLowerCase().trim();
+
+  // Exact match (case-insensitive, trimmed)
+  for (const stdFlavor of itemStandardFlavorsArray) {
+    if (stdFlavor.toLowerCase().trim() === normalizedAiFlavor) {
+      return stdFlavor; // Return the original casing of the standard flavor
+    }
+  }
+
+  // Check if standard flavor text *contains* the AI flavor text (e.g., Std: "Jalapeno Black Bean (vegan)", AI: "Jalapeno Black Bean")
+  for (const stdFlavor of itemStandardFlavorsArray) {
+    if (stdFlavor.toLowerCase().trim().includes(normalizedAiFlavor)) {
+      return stdFlavor;
+    }
+  }
+  
+  // Check if AI flavor text *contains* a standard flavor text (e.g., Std: "Chicken", AI: "Chicken and Cheese")
+  // This is less precise, so it's a lower priority match.
+  // For this to be useful, we'd want the shortest standard flavor that's a substring.
+  let bestSubstringMatch = null;
+  for (const stdFlavor of itemStandardFlavorsArray) {
+    if (normalizedAiFlavor.includes(stdFlavor.toLowerCase().trim())) {
+      if (!bestSubstringMatch || stdFlavor.length > bestSubstringMatch.length) { // Prefer longer (more specific) standard flavor match
+        bestSubstringMatch = stdFlavor;
+      }
+    }
+  }
+  if (bestSubstringMatch) {
+      return bestSubstringMatch;
+  }
+
+  // Optional: Add Levenshtein distance or other fuzzy matching here if needed
+  // For now, the above checks cover many common cases.
+
+  return null; // No good match found
 }
