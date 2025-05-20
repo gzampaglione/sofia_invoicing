@@ -1,65 +1,8 @@
-// === USER INSTRUCTIONS FOR REVIEWING REGENERATED CODE ===
-// 1. Manifest Update: If you implement the createHomepageCard, update `onTriggerFunction` in appsscript.json.
-//    For now, the primary entry point for the catering workflow is buildAddOnCard.
-// 2. API Key: Ensure 'GL_API_KEY' is correctly set in Script Properties.
-// 3. Sheet Configuration:
-//    - SHEET_ID: Verify this points to your main Google Sheet.
-//    - ITEM_LOOKUP_SHEET_NAME: Verify tab name for your master item list.
-//    - INVOICE_TEMPLATE_SHEET_NAME: Verify tab name for your invoice template.
-//    - KITCHEN_SHEET_TEMPLATE_NAME: Verify tab name for your kitchen sheet template.
-//    - FALLBACK_CUSTOM_ITEM_SKU: Ensure an item with this SKU exists in your "Item Lookup" sheet.
-// 4. Client Rules: The CLIENT_RULES_LOOKUP constant now holds client matching rules. Update it as needed.
-// 5. Permissions (OAuth Scopes): This script interacts with Gmail, Sheets, and Drive (for PDFs).
-//    Ensure your appsscript.json manifest includes necessary scopes (see previous discussion for examples).
-// 6. Testing: Test incrementally. Use console.log() (for Cloud Logging) or Logger.log() for debugging.
-// 7. Prompts: Review Gemini prompts to ensure they align with your data extraction and matching needs.
-// 8. Invoice & Kitchen Template Cell Mapping: Carefully review all cell/column mapping constants
-//    and adjust them to EXACTLY match your respective sheet layouts.
-// === END USER INSTRUCTIONS ===
-
-// === CONFIGURATION ===
-const API_KEY = PropertiesService.getScriptProperties().getProperty('GL_API_KEY');
-const SHEET_ID = '1qlEw5k5K-Tqg0joxXeiKtpgr6x8BzclobI-E-_mORhY'; // Main Spreadsheet ID
-const ITEM_LOOKUP_SHEET_NAME = "Item Lookup";
-const INVOICE_TEMPLATE_SHEET_NAME = "INVOICE_TEMPLATE";
-const KITCHEN_SHEET_TEMPLATE_NAME = "KITCHEN_SHEET_TEMPLATE";
-
-const FALLBACK_CUSTOM_ITEM_SKU = "CUSTOM_SKU"; // Ensure this SKU exists in your Item Lookup sheet
-
-const CLIENT_RULES_LOOKUP = [
-  { rule: "@wharton.upenn.edu", clientName: "University of Pennsylvania - Wharton" },
-  { rule: "law.upenn.edu", clientName: "University of Pennsylvania - Law School"},
-  { rule: "@upenn.edu", clientName: "University of Pennsylvania" }
-].sort((a, b) => b.rule.length - a.rule.length); // Sort by rule length, descending
-
-
-// === INVOICE TEMPLATE CELL MAPPING CONSTANTS ===
-const ORDER_NUM_CELL = "D7";
-const CUSTOMER_NAME_CELL = "B12";
-const ADDRESS_LINE_1_CELL = "B13";
-const ADDRESS_LINE_2_CELL = "B14";
-const CITY_STATE_ZIP_CELL = "B15";
-const DELIVERY_DATE_CELL_INVOICE = "E15";
-const DELIVERY_TIME_CELL_INVOICE = "G15";
-
-const ITEM_START_ROW_INVOICE = 19;
-const ITEM_DESCRIPTION_COL_INVOICE = "B";
-const ITEM_QTY_COL_INVOICE = "E";
-const ITEM_UNIT_PRICE_COL_INVOICE = "F";
-const ITEM_TOTAL_PRICE_COL_INVOICE = "G";
-
-// === KITCHEN SHEET TEMPLATE CELL MAPPING CONSTANTS ===
-const KITCHEN_CUSTOMER_PHONE_CELL = "B1";
-const KITCHEN_DELIVERY_DATE_CELL = "C9";
-const KITCHEN_DELIVERY_TIME_CELL = "F9";
-
-const KITCHEN_ITEM_START_ROW = 12;
-const KITCHEN_QTY_COL = "B";
-const KITCHEN_SIZE_COL = "C";
-const KITCHEN_ITEM_NAME_COL = "D";
-const KITCHEN_FILLING_COL = "E";
-const KITCHEN_NOTES_COL = "F";
-
+// V13
+// This script contains the core workflow logic for the Google Workspace Add-on.
+// Configuration constants are in Constants.gs.
+// Utility functions are in Utils.gs.
+// Gemini prompts are in Prompts.gs.
 
 // === HOMEPAGE CARD (Primary Entry Point if manifest is updated) ===
 function createHomepageCard(e) {
@@ -123,6 +66,7 @@ function buildAddOnCard(e) {
   const senderEmailFull = message.getFrom();
   console.log("Sender Email for matching: " + senderEmailFull);
 
+  // Gemini prompts for contact info and item extraction
   const contactInfoParsed = _parseJson(callGemini(_buildContactInfoPrompt(body)));
   const itemsParsed = _parseJson(callGemini(_buildStructuredItemExtractionPrompt(body)));
 
@@ -137,26 +81,51 @@ function buildAddOnCard(e) {
   console.log("Matched Client: " + client);
 
   const data = {};
-  // Store sender's info separately
+  // Store sender's info separately (Sofia Deleon / elmerkury.com)
   data['Ordering Person Name'] = orderingPersonName;
   data['Ordering Person Email'] = orderingPersonEmail;
 
-  // 'Customer Name' will be used for billing/invoice, defaults to sender if Gemini doesn't find a specific "Customer Name"
+  // Set Customer Name (e.g., Ashley Duchi), defaulting to sender if not found by Gemini
   data['Customer Name'] = contactInfoParsed['Customer Name'] || orderingPersonName;
-  // 'Customer Address Email' for invoice, defaults to sender if 'Contact Email' not found by Gemini
-  data['Customer Address Email'] = contactInfoParsed['Contact Email'] || orderingPersonEmail;
+  
+  // Set Delivery Contact Person (e.g., Romina), defaulting to Customer Name or sender if not found
+  data['Contact Person'] = contactInfoParsed['Delivery Contact Person'] || data['Customer Name'] || orderingPersonName;
+  
+  // Prioritize Delivery Contact Phone, then Customer Address Phone, then Ordering Person's (sender's) phone if available, else empty string.
+  data['Contact Phone'] = contactInfoParsed['Delivery Contact Phone'] || contactInfoParsed['Customer Address Phone'] || '';
+  // Prioritize Delivery Contact Email, then Customer Address Email, then Ordering Person's email.
+  data['Contact Email'] = contactInfoParsed['Delivery Contact Email'] || contactInfoParsed['Customer Address Email'] || orderingPersonEmail;
+
+  // Invoice recipient email
+  data['Customer Address Email'] = contactInfoParsed['Customer Address Email'] || orderingPersonEmail;
+
 
   data['Client'] = client;
   data['orderNum'] = orderNum;
   data['messageId'] = msgId;
   data['threadId'] = message.getThread().getId();
 
-  // Merge all other extracted contact info from Gemini.
-  // This will add/overwrite 'Contact Person', 'Contact Phone', 'Contact Email' if Gemini found them.
-  // It will also overwrite 'Customer Name' if Gemini found a different one in the body.
+  // Merge remaining extracted contact info (address, dates, utensils)
+  // These will override if Gemini provided them for specific fields.
   Object.assign(data, contactInfoParsed);
 
   data['Items Ordered'] = itemsParsed['Items Ordered'] || [];
+
+  // Calculate preliminary grand total and tip
+  let preliminarySubtotal = 0;
+  // This preliminary calculation is for the initial tip display.
+  // The full calculation will occur in handleItemMappingSubmit with actual QB item prices.
+  data['Items Ordered'].forEach(item => {
+    // Attempt to parse price from description if present (e.g., "Pupusas Tray – Large (<span class="math-inline">140\)"\)
+const priceMatch \= item\.description\.match\(/\\</span>(\d+(\.\d{2})?)/);
+    const itemPrice = priceMatch ? parseFloat(priceMatch[1]) : 0;
+    preliminarySubtotal += (parseInt(item.quantity) || 1) * itemPrice;
+  });
+
+  // Calculate 10% tip from preliminary subtotal as per request
+  data['TipAmount'] = (preliminarySubtotal * 0.10);
+  console.log("Preliminary Subtotal for Tip: $" + preliminarySubtotal.toFixed(2));
+  console.log("Calculated Initial Tip Amount: $" + data['TipAmount'].toFixed(2));
 
   PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(data));
   return buildReviewContactCard({ parameters: { orderNum: orderNum } });
@@ -180,25 +149,28 @@ function buildReviewContactCard(e) {
   // Display Ordering Person (Sender)
   section.addWidget(CardService.newTextParagraph().setText("<b>Ordering Person (Sender):</b> " + (data['Ordering Person Name'] || 'N/A') + " (" + (data['Ordering Person Email'] || 'N/A') + ")"));
 
-  // Editable fields for Delivery Contact
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Person').setTitle('Delivery Contact Person').setValue(data['Contact Person'] || data['Ordering Person Name'] || ''));
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Phone').setTitle('Delivery Contact Phone').setValue(_formatPhone(data['Contact Phone'] || data['Customer Address Phone'] || '')));
-  section.addWidget(CardService.newTextInput().setFieldName('Contact Email').setTitle('Delivery Contact Email').setValue(data['Contact Email'] || data['Ordering Person Email'] || ''));
+  // Editable fields for Customer and Delivery Contact
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Name').setTitle('Customer Name (for invoice)').setValue(data['Customer Name'] || '').setHint('e.g., Penn Medicine, Ashley Duchi').setRequired(true));
+  section.addWidget(CardService.newTextInput().setFieldName('Contact Person').setTitle('Delivery Contact Person').setValue(data['Contact Person'] || data['Customer Name'] || '').setHint('e.g., Romina').setRequired(true));
   
-  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 1').setTitle('Delivery Address Line 1').setValue(data['Customer Address Line 1'] || ''));
+  // The phone number for delivery contact should be used for validation and pre-filled with customer address phone if not found
+  section.addWidget(CardService.newTextInput().setFieldName('Contact Phone').setTitle('Delivery Contact Phone').setValue(_formatPhone(data['Contact Phone'] || data['Customer Address Phone'] || '')).setHint('(XXX) XXX-XXXX').setRequired(true));
+  section.addWidget(CardService.newTextInput().setFieldName('Contact Email').setTitle('Delivery Contact Email').setValue(data['Contact Email'] || data['Customer Address Email'] || '').setHint('e.g., delivery@example.com'));
+  
+  section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 1').setTitle('Delivery Address Line 1').setValue(data['Customer Address Line 1'] || '').setRequired(true));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 2').setTitle('Delivery Address Line 2').setValue(data['Customer Address Line 2'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address City').setTitle('Delivery City').setValue(data['Customer Address City'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address State').setTitle('Delivery State').setValue(data['Customer Address State'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address ZIP').setTitle('Delivery ZIP').setValue(data['Customer Address ZIP'] || ''));
   
-  const deliveryDatePicker = CardService.newDatePicker().setFieldName("Delivery Date").setTitle("Delivery Date").setValueInMsSinceEpoch(_parseDateToMsEpoch(data['Delivery Date']));
+  const deliveryDatePicker = CardService.newDatePicker().setFieldName("Delivery Date").setTitle("Delivery Date").setValueInMsSinceEpoch(_parseDateToMsEpoch(data['Delivery Date'])).setRequired(true);
   section.addWidget(deliveryDatePicker);
 
-  const deliveryTimeInput = CardService.newSelectionInput().setFieldName('Delivery Time').setTitle('Delivery Time');
-  _setSelectionInputTypeSafely(deliveryTimeInput, CardService.SelectionInputType.DROPDOWN, "Delivery Time Dropdown");
+  const deliveryTimeInput = CardService.newSelectionInput().setFieldName('Delivery Time').setTitle('Delivery Time').setRequired(true);
+  deliveryTimeInput.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
   const selectedTime = data['Delivery Time'] || '';
   const startHour = 5; const endHour = 23; // 5 AM to 11 PM
-  for (let h = startHour; h < endHour; h++) {
+  for (let h = startHour; h <= endHour; h++) { // Loop includes endHour for 11 PM
     for (let m = 0; m < 60; m += 15) {
       const time = Utilities.formatDate(new Date(2000, 0, 1, h, m), Session.getScriptTimeZone(), 'h:mm a');
       deliveryTimeInput.addItem(time, time, selectedTime === time);
@@ -208,21 +180,70 @@ function buildReviewContactCard(e) {
 
   const utensilsValue = data['Include Utensils?'] || 'Unknown';
   const utensilsInput = CardService.newSelectionInput().setFieldName('Include Utensils?').setTitle('Include Utensils?');
-  _setSelectionInputTypeSafely(utensilsInput, CardService.SelectionInputType.DROPDOWN, "Utensils Dropdown");
+  utensilsInput.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
   utensilsInput.addItem('Yes', 'Yes', utensilsValue === 'Yes').addItem('No', 'No', utensilsValue === 'No').addItem('Unknown', 'Unknown', utensilsValue !== 'Yes' && utensilsValue !== 'No');
   section.addWidget(utensilsInput);
   if (utensilsValue === 'Yes') {
     section.addWidget(CardService.newTextInput().setFieldName('If yes: how many?').setTitle('How many utensils?').setValue(data['If yes: how many?'] || ''));
   }
 
-  section.addWidget(CardService.newTextInput().setFieldName('Client').setTitle('Client (based on email domain)').setValue(data['Client'] || 'Unknown'));
+  section.addWidget(CardService.newTextInput().setFieldName('Client').setTitle('Client (based on email domain)').setValue(data['Client'] || 'Unknown').setHint('e.g., University of Pennsylvania'));
   
-  const action = CardService.newAction().setFunctionName('handleContactInfoSubmit').setParameters({ orderNum: orderNum });
+  // Action with validation
+  const action = CardService.newAction().setFunctionName('handleContactInfoSubmitWithValidation').setParameters({ orderNum: orderNum });
   const footer = CardService.newFixedFooter().setPrimaryButton(CardService.newTextButton().setText('Confirm Contact & Proceed to Items').setOnClickAction(action).setTextButtonStyle(CardService.TextButtonStyle.FILLED));
   return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle('Step 1: Customer & Order Details')).addSection(section).setFixedFooter(footer).build();
 }
 
+/**
+ * Handles the submission of contact information with validation.
+ * This is the function linked to the "Confirm Contact & Proceed" button.
+ */
+function handleContactInfoSubmitWithValidation(e) {
+  const inputs = e.commonEventObject.formInputs;
+  const orderNum = e.parameters.orderNum;
+
+  // Client-side validation
+  const customerName = inputs['Customer Name']?.stringInputs?.value?.[0];
+  const contactPerson = inputs['Contact Person']?.stringInputs?.value?.[0];
+  const contactPhone = inputs['Contact Phone']?.stringInputs?.value?.[0];
+  const customerAddressLine1 = inputs['Customer Address Line 1']?.stringInputs?.value?.[0];
+  const deliveryDateMs = inputs['Delivery Date']?.dateInput?.msSinceEpoch;
+  const deliveryTimeStr = inputs['Delivery Time']?.stringInputs?.value?.[0];
+
+  const validationMessages = [];
+
+  if (!deliveryDateMs || !deliveryTimeStr) {
+    validationMessages.push("• Delivery Date and Time are required.");
+  }
+  if (!customerName && !contactPerson) {
+    validationMessages.push("• Either Customer Name or Delivery Contact Person is required.");
+  }
+  if (!contactPhone) { // Only check Contact Phone as it covers both
+    validationMessages.push("• A Delivery Contact Phone number is required.");
+  }
+  if (!customerAddressLine1) {
+    validationMessages.push("• Delivery Address Line 1 is required.");
+  }
+
+  if (validationMessages.length > 0) {
+    const card = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Validation Error').setImageStyle(CardService.ImageStyle.CIRCLE).setImageUrl('https://fonts.gstatic.com/s/i/googlematerialicons/error/v15/gm_grey_24dp.png'))
+      .addSection(CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph().setText('<b>Please correct the following issues:</b><br>' + validationMessages.join('<br>'))))
+      .addSection(CardService.newCardSection()
+        .addWidget(CardService.newTextButton().setText('Back to Details').setOnClickAction(CardService.newAction().setFunctionName('buildReviewContactCard').setParameters({ orderNum: orderNum })))
+      ).build();
+    return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(card)).build();
+  }
+
+  // If validation passes, proceed with actual submission
+  return handleContactInfoSubmit(e);
+}
+
+
 // === SUBMIT CONTACT INFO & PROCEED TO ITEM MAPPING ===
+// This function is now called by handleContactInfoSubmitWithValidation AFTER validation passes.
 function handleContactInfoSubmit(e) {
   const inputs = e.commonEventObject.formInputs;
   const orderNum = e.parameters.orderNum;
@@ -250,9 +271,7 @@ function handleContactInfoSubmit(e) {
     return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText("Error: Original order data missing.")).build();
   }
   const existing = JSON.parse(existingRaw);
-  // When saving, prioritize the edited fields. 'Contact Person', 'Contact Phone', 'Contact Email'
-  // will be updated from the form. 'Customer Name' (for billing) and 'Customer Address Email' (for invoice recipient)
-  // are not directly on this form but are preserved from the initial data object.
+  // When saving, prioritize the edited fields from the form.
   const merged = { ...existing, ...newData };
 
   if (deliveryDateMs && deliveryTimeStr) {
@@ -260,6 +279,8 @@ function handleContactInfoSubmit(e) {
     console.log("Master Delivery Time (ms): " + merged['master_delivery_time_ms']);
   }
 
+  // Re-run item extraction if not already present or if it's in a bad format
+  // This is a safety net in case the initial extraction failed or was incomplete.
   if (!merged['Items Ordered'] || !Array.isArray(merged['Items Ordered']) || (merged['Items Ordered'].length > 0 && typeof merged['Items Ordered'][0].description === 'undefined')) {
     const message = GmailApp.getMessageById(merged.messageId);
     const body = message.getPlainBody();
@@ -311,7 +332,7 @@ function buildItemMappingAndPricingCard(e) {
       itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_qty_${index}`).setTitle('Unit Quantity').setValue(item.extracted_main_quantity || '1'));
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`AI Match Confidence: ${item.match_confidence || 'N/A'}`));
       const qbItemDropdown = CardService.newSelectionInput().setFieldName(`item_qb_sku_${index}`).setTitle('Item');
-      _setSelectionInputTypeSafely(qbItemDropdown, CardService.SelectionInputType.DROPDOWN, `Item Dropdown ${index}`);
+      qbItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
       let preSelected = false;
       masterQBItems.forEach(masterItem => {
         if (!masterItem.SKU) return;
@@ -343,7 +364,6 @@ function buildItemMappingAndPricingCard(e) {
       itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_kitchen_notes_${index}`).setTitle('Confirmed Flavors/Notes for Kitchen').setValue(item.parsed_flavors_or_details || '').setMultiline(true));
       const initialPrice = masterMatchDetails ? (masterMatchDetails.Price !== undefined ? masterMatchDetails.Price : 0) : 0;
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Unit Price:</b> $${initialPrice.toFixed(2)}`));
-      // Removed hidden item_price input
       itemsDisplaySection.addWidget(CardService.newSelectionInput().setFieldName(`item_remove_${index}`).setTitle("Remove this item?").setType(CardService.SelectionInputType.CHECKBOX).addItem("Yes, remove", "true", false));
       itemsDisplaySection.addWidget(CardService.newDivider());
     });
@@ -352,7 +372,7 @@ function buildItemMappingAndPricingCard(e) {
 
   const manualAddSection = CardService.newCardSection().setHeader("Manually Add New Item").setCollapsible(true);
   const newItemDropdown = CardService.newSelectionInput().setFieldName("new_item_qb_sku").setTitle("Select Item");
-   _setSelectionInputTypeSafely(newItemDropdown, CardService.SelectionInputType.DROPDOWN, "New Item Manual Add Dropdown");
+  newItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); // Set type directly
   newItemDropdown.addItem("--- Select Item to Add ---", "", true);
   masterQBItems.forEach(masterItem => {
     if (!masterItem.SKU) return;
@@ -366,8 +386,9 @@ function buildItemMappingAndPricingCard(e) {
 
   // Additional Charges Section
   const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges (Optional)").setCollapsible(true);
-  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue("0.00"));
-  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_amount").setTitle("Other Charges Amount ($)").setValue("0.00"));
+  // Pre-populate tip amount calculated earlier
+  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount (<span class="math-inline">\)"\)\.setValue\(\(orderData\['TipAmount'\] \|\| 0\)\.toFixed\(2\)\)\);
+additionalChargesSection\.addWidget\(CardService\.newTextInput\(\)\.setFieldName\("other\_charges\_amount"\)\.setTitle\("Other Charges Amount \(</span>)").setValue("0.00"));
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_description").setTitle("Other Charges Description"));
   card.addSection(additionalChargesSection);
 
@@ -377,6 +398,9 @@ function buildItemMappingAndPricingCard(e) {
   return card.build();
 }
 
+/**
+ * Handles the submission of item mapping and pricing, calculates final totals.
+ */
 function handleItemMappingSubmit(e) {
   const formInputs = e.formInputs || (e.commonEventObject && e.commonEventObject.formInputs);
   if (!formInputs) { console.error("Error in handleItemMappingSubmit: formInputs is undefined."); return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText("Error: Could not read form data.")).build(); }
@@ -385,27 +409,49 @@ function handleItemMappingSubmit(e) {
   const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
   if (!orderDataString) { console.error("Error in handleItemMappingSubmit: Original order data for " + orderNum + " not found."); return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText("Error: Original order data not found.")).build(); }
   const orderData = JSON.parse(orderDataString); const masterQBItems = getMasterQBItems(); const confirmedQuickBooksItems = [];
+  
   for (let i = 0; i < aiItemCount; i++) {
-    const removeThisItem = formInputs[`item_remove_${i}`] && formInputs[`item_remove_${i}`][0] === "true"; if (removeThisItem) { console.log(`Item ${i} marked for removal.`); continue; }
-    const qtyString = formInputs[`item_qty_${i}`] && formInputs[`item_qty_${i}`][0]; const qbItemSKU = formInputs[`item_qb_sku_${i}`] && formInputs[`item_qb_sku_${i}`][0]; 
+    const removeThisItem = formInputs[`item_remove_${i}`] && formInputs[`item_remove_${i}`][0] === "true";
+    if (removeThisItem) { console.log(`Item ${i} marked for removal.`); continue; }
+
+    const qtyString = formInputs[`item_qty_${i}`] && formInputs[`item_qty_${i}`][0];
+    const qbItemSKU = formInputs[`item_qb_sku_${i}`] && formInputs[`item_qb_sku_${i}`][0]; 
     const kitchenNotes = formInputs[`item_kitchen_notes_${i}`] && formInputs[`item_kitchen_notes_${i}`][0] || "";
-    const originalEmailItem = orderData['Items Ordered'] && orderData['Items Ordered'][i]; const originalDescription = originalEmailItem ? originalEmailItem.description : "N/A";
+    const originalEmailItem = orderData['Items Ordered'] && orderData['Items Ordered'][i];
+    const originalDescription = originalEmailItem ? originalEmailItem.description : "N/A";
+
     if (qbItemSKU && qtyString) {
-      const masterItemDetails = masterQBItems.find(master => master.SKU === qbItemSKU); let unitPrice = 0; let itemName = "Custom Item"; let itemSKU = qbItemSKU;
-      if (masterItemDetails) { unitPrice = masterItemDetails.Price || 0; itemName = masterItemDetails.Name; }
-      else if (qbItemSKU === FALLBACK_CUSTOM_ITEM_SKU) { unitPrice = 0; } 
-      else { console.warn("Master details not found for SKU: " + qbItemSKU); itemSKU = FALLBACK_CUSTOM_ITEM_SKU; unitPrice = 0; }
+      const masterItemDetails = masterQBItems.find(master => master.SKU === qbItemSKU);
+      let unitPrice = 0;
+      let itemName = "Custom Item";
+      let itemSKU = qbItemSKU;
+
+      if (masterItemDetails) {
+        unitPrice = masterItemDetails.Price || 0;
+        itemName = masterItemDetails.Name;
+      } else if (qbItemSKU === FALLBACK_CUSTOM_ITEM_SKU) {
+        unitPrice = 0; // Fallback custom item can have 0 price initially
+      } else {
+        console.warn("Master details not found for SKU: " + qbItemSKU + ". Defaulting to fallback.");
+        itemSKU = FALLBACK_CUSTOM_ITEM_SKU;
+        unitPrice = 0; // Set to 0 if SKU not found and not the designated fallback
+      }
       confirmedQuickBooksItems.push({ quickbooks_item_id: itemSKU, quickbooks_item_name: itemName, sku: itemSKU, quantity: parseInt(qtyString) || 1, unit_price: unitPrice, kitchen_notes_and_flavors: kitchenNotes, original_email_description: originalDescription });
     }
   }
-  const newItemQbSKU = formInputs.new_item_qb_sku && formInputs.new_item_qb_sku[0]; const newItemQtyString = formInputs.new_item_qty && formInputs.new_item_qty[0];
+
+  // Handle manually added new item
+  const newItemQbSKU = formInputs.new_item_qb_sku && formInputs.new_item_qb_sku[0];
+  const newItemQtyString = formInputs.new_item_qty && formInputs.new_item_qty[0];
   if (newItemQbSKU && newItemQbSKU !== "" && newItemQtyString) {
     const masterItemDetails = masterQBItems.find(master => master.SKU === newItemQbSKU);
     if (masterItemDetails) {
-      const unitPrice = masterItemDetails.Price || 0; const newItemKitchenNotes = formInputs.new_item_kitchen_notes && formInputs.new_item_kitchen_notes[0] || "";
+      const unitPrice = masterItemDetails.Price || 0;
+      const newItemKitchenNotes = formInputs.new_item_kitchen_notes && formInputs.new_item_kitchen_notes[0] || "";
       confirmedQuickBooksItems.push({ quickbooks_item_id: newItemQbSKU, quickbooks_item_name: masterItemDetails.Name, sku: masterItemDetails.SKU, quantity: parseInt(newItemQtyString) || 1, unit_price: unitPrice, kitchen_notes_and_flavors: newItemKitchenNotes, original_email_description: newItemKitchenNotes || "Manually Added: " + masterItemDetails.Name });
     }
   }
+
   orderData['ConfirmedQBItems'] = confirmedQuickBooksItems; 
   orderData['TipAmount'] = parseFloat(formInputs.tip_amount && formInputs.tip_amount[0]) || 0;
   orderData['OtherChargesAmount'] = parseFloat(formInputs.other_charges_amount && formInputs.other_charges_amount[0]) || 0;
@@ -417,6 +463,11 @@ function handleItemMappingSubmit(e) {
   return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(invoiceActionsCard)).build();
 }
 
+/**
+ * Builds the final review and actions card before document generation.
+ * @param {GoogleAppsScript.Addons.EventObject} e The event object.
+ * @returns {GoogleAppsScript.Card_Service.Card} The constructed card.
+ */
 function buildInvoiceActionsCard(e) {
   const orderNum = e.parameters.orderNum;
   const card = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle(`Step 3: Final Review & Actions for ${orderNum}`));
@@ -425,23 +476,44 @@ function buildInvoiceActionsCard(e) {
   if (orderDataString) {
     const orderData = JSON.parse(orderDataString);
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Ordering Person:</b> " + (orderData['Ordering Person Name'] || 'N/A') + " (" + (orderData['Ordering Person Email'] || 'N/A') + ")</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Name (for Invoice):</b> " + (orderData['Customer Name'] || 'N/A') + "</i>"));
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Contact:</b> " + (orderData['Contact Person'] || 'N/A') + "</i>"));
-    let address = "<i><b>Address:</b> "; if (orderData['Customer Address Line 1']) address += orderData['Customer Address Line 1']; if (orderData['Customer Address Line 2']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address Line 2']; if (orderData['Customer Address City']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address City']; if (orderData['Customer Address State']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address State']; if (orderData['Customer Address ZIP']) address += " " + orderData['Customer Address ZIP']; address += "</i>";
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Phone:</b> " + _formatPhone(orderData['Contact Phone']) || 'N/A' + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Email:</b> " + (orderData['Contact Email'] || 'N/A') + "</i>"));
+
+    let address = "<i><b>Address:</b> ";
+    if (orderData['Customer Address Line 1']) address += orderData['Customer Address Line 1'];
+    if (orderData['Customer Address Line 2']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address Line 2'];
+    if (orderData['Customer Address City']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address City'];
+    if (orderData['Customer Address State']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address State'];
+    if (orderData['Customer Address ZIP']) address += " " + orderData['Customer Address ZIP'];
+    address += "</i>";
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText(address.length <= "<i><b>Address:</b> </i>".length + 1 ? "<i><b>Address:</b> N/A</i>" : address));
+    
     let deliveryDateFormatted = orderData['Delivery Date'];
-    if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy"); }
-    else if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && deliveryDateFormatted.match(/^\d{4}-\d{2}-\d{2}/)) { deliveryDateFormatted = Utilities.formatDate(new Date(deliveryDateFormatted.replace(/-/g, '/')), Session.getScriptTimeZone(), "MM/dd/yyyy"); }
+    if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) {
+        deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy");
+    } else if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && deliveryDateFormatted.match(/^\d{4}-\d{2}-\d{2}/)) {
+        deliveryDateFormatted = Utilities.formatDate(new Date(deliveryDateFormatted.replace(/-/g, '/')), Session.getScriptTimeZone(), "MM/dd/yyyy");
+    }
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery:</b> " + (deliveryDateFormatted || 'N/A') + " at " + (orderData['Delivery Time'] || 'N/A') + "</i>"));
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Client:</b> " + (orderData['Client'] || 'N/A') + "</i>"));
   } else { orderDetailsSection.addWidget(CardService.newTextParagraph().setText("Could not retrieve order details.")); }
   card.addSection(orderDetailsSection);
 
-  const itemSummarySection = CardService.newCardSection().setHeader("Confirmed Items Summary"); let grandTotal = 0;
+  const itemSummarySection = CardService.newCardSection().setHeader("Confirmed Items Summary");
+  let grandTotal = 0;
   if (orderDataString) {
-    const orderData = JSON.parse(orderDataString); const confirmedItems = orderData['ConfirmedQBItems'];
+    const orderData = JSON.parse(orderDataString);
+    const confirmedItems = orderData['ConfirmedQBItems'];
     if (confirmedItems && Array.isArray(confirmedItems) && confirmedItems.length > 0) {
-      confirmedItems.forEach(item => { const itemTotal = (item.quantity || 0) * (item.unit_price || 0); grandTotal += itemTotal; itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>${item.original_email_description || item.quickbooks_item_name}</b><br>Qty: ${item.quantity}, Unit Price: $${(item.unit_price || 0).toFixed(2)}, Total: $${itemTotal.toFixed(2)}${item.kitchen_notes_and_flavors ? '<br><font color="#666666"><i>Kitchen Notes: ' + item.kitchen_notes_and_flavors + '</i></font>' : ''}`)); });
+      confirmedItems.forEach(item => {
+        const itemTotal = (item.quantity || 0) * (item.unit_price || 0);
+        grandTotal += itemTotal;
+        itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>${item.original_email_description || item.quickbooks_item_name}</b><br>Qty: ${item.quantity}, Unit Price: $${(item.unit_price || 0).toFixed(2)}, Total: $${itemTotal.toFixed(2)}${item.kitchen_notes_and_flavors ? '<br><font color="#666666"><i>Kitchen Notes: ' + item.kitchen_notes_and_flavors + '</i></font>' : ''}`));
+      });
     }
+    
     if (orderData['TipAmount'] > 0) {
         itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>Tip:</b> $${orderData['TipAmount'].toFixed(2)}`));
         grandTotal += orderData['TipAmount'];
@@ -450,7 +522,29 @@ function buildInvoiceActionsCard(e) {
         itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>${orderData['OtherChargesDescription'] || 'Other Charges'}:</b> $${orderData['OtherChargesAmount'].toFixed(2)}`));
         grandTotal += orderData['OtherChargesAmount'];
     }
-    if (confirmedItems && confirmedItems.length > 0 || orderData['TipAmount'] > 0 || orderData['OtherChargesAmount'] > 0) {
+    
+    // Delivery Fee - always added now
+    let deliveryFee = BASE_DELIVERY_FEE;
+    if (orderData['master_delivery_time_ms']) {
+        const deliveryHour = new Date(orderData['master_delivery_time_ms']).getHours();
+        if (deliveryHour >= DELIVERY_FEE_CUTOFF_HOUR) {
+            deliveryFee = AFTER_4PM_DELIVERY_FEE;
+        }
+    }
+    itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>Delivery Fee:</b> $${deliveryFee.toFixed(2)}`));
+    grandTotal += deliveryFee;
+
+    // Utensil Costs
+    if (orderData['Include Utensils?'] === 'Yes') {
+        const numUtensils = parseInt(orderData['If yes: how many?']) || 0;
+        if (numUtensils > 0) {
+            const utensilTotalCost = numUtensils * COST_PER_UTENSIL_SET;
+            itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>Utensils (${numUtensils} sets):</b> $${utensilTotalCost.toFixed(2)}`));
+            grandTotal += utensilTotalCost;
+        }
+    }
+
+    if (confirmedItems && confirmedItems.length > 0 || orderData['TipAmount'] > 0 || orderData['OtherChargesAmount'] > 0 || deliveryFee > 0 || (orderData['Include Utensils?'] === 'Yes' && parseInt(orderData['If yes: how many?']) > 0)) {
       itemSummarySection.addWidget(CardService.newDivider()); 
       itemSummarySection.addWidget(CardService.newTextParagraph().setText(`<b>Estimated Grand Total: $${grandTotal.toFixed(2)}</b>`));
     } else { 
@@ -468,30 +562,43 @@ function buildInvoiceActionsCard(e) {
   return card.build();
 }
 
+/**
+ * Handles the generation of invoice and kitchen documents and prepares the email reply.
+ * @param {GoogleAppsScript.Addons.EventObject} e The event object.
+ * @returns {GoogleAppsScript.Card_Service.ActionResponse} An action response.
+ */
 function handleGenerateInvoiceAndEmail(e) {
   const orderNum = e.parameters.orderNum;
-  let invoiceSheetInfo = null; let kitchenSheetInfo = null;
+  let invoiceSheetInfo = null;
+  let kitchenSheetInfo = null;
   try {
     invoiceSheetInfo = populateInvoiceSheet(orderNum);
     if (!invoiceSheetInfo || !invoiceSheetInfo.id || !invoiceSheetInfo.url || !invoiceSheetInfo.name) { throw new Error("Failed to populate invoice sheet or retrieve its details."); }
     console.log("Invoice sheet populated: " + invoiceSheetInfo.name + " (ID: " + invoiceSheetInfo.id + ")");
+    
     kitchenSheetInfo = populateKitchenSheet(orderNum); // Always generate kitchen sheet
     if (!kitchenSheetInfo || !kitchenSheetInfo.id || !kitchenSheetInfo.url || !kitchenSheetInfo.name) { console.warn("Warning: Failed to populate kitchen sheet for order " + orderNum + ". Continuing with invoice PDF and email."); }
     else { console.log("Kitchen sheet populated: " + kitchenSheetInfo.name + " (ID: " + kitchenSheetInfo.id + ")"); }
+    
     const emailInfo = createPdfAndPrepareEmailReply(orderNum, invoiceSheetInfo.id, invoiceSheetInfo.name);
     if (!emailInfo || !emailInfo.draftId) { throw new Error("Failed to create Invoice PDF or prepare email draft."); }
+    
     const successCard = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("✅ Success! Documents Prepared"));
     const successSection = CardService.newCardSection();
     successSection.addWidget(CardService.newTextParagraph().setText(`Invoice sheet "<b>${invoiceSheetInfo.name}</b>" has been created.`));
     successSection.addWidget(CardService.newButtonSet().addButton(CardService.newTextButton().setText("Open Invoice Sheet").setOpenLink(CardService.newOpenLink().setUrl(invoiceSheetInfo.url))));
+    
     if (kitchenSheetInfo && kitchenSheetInfo.url) {
         successSection.addWidget(CardService.newTextParagraph().setText(`Kitchen sheet "<b>${kitchenSheetInfo.name}</b>" has also been created.`));
         successSection.addWidget(CardService.newButtonSet().addButton(CardService.newTextButton().setText("Open Kitchen Sheet").setOpenLink(CardService.newOpenLink().setUrl(kitchenSheetInfo.url))));
     }
+    
     successSection.addWidget(CardService.newTextParagraph().setText("A draft email with the invoice PDF attached has been created."));
     successSection.addWidget(CardService.newButtonSet().addButton(CardService.newTextButton().setText("Open Draft Email").setOpenLink(CardService.newOpenLink().setUrl(`https://mail.google.com/mail/u/0/#drafts?compose=${emailInfo.draftId}`))));
+    
     const clearAction = CardService.newAction().setFunctionName("handleClearAndClose").setParameters({orderNum: orderNum});
     successSection.addWidget(CardService.newTextButton().setText("Done (Clear & Close Sidebar)").setOnClickAction(clearAction));
+    
     successCard.addSection(successSection);
     return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(successCard.build())).build();
   } catch (err) {
@@ -500,12 +607,23 @@ function handleGenerateInvoiceAndEmail(e) {
   }
 }
 
+/**
+ * Clears user properties for the current order and closes the sidebar.
+ * @param {GoogleAppsScript.Addons.EventObject} e The event object.
+ * @returns {GoogleAppsScript.Card_Service.ActionResponse} An action response to close the add-on.
+ */
 function handleClearAndClose(e) {
     const orderNum = e.parameters.orderNum;
     if (orderNum) { PropertiesService.getUserProperties().deleteProperty(orderNum); console.log("Cleared data for orderNum: " + orderNum); }
     return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popToRoot()).setNotification(CardService.newNotification().setText("Order data cleared. Add-on is ready for the next email.")).build();
 }
 
+/**
+ * Populates a new kitchen sheet with order details and confirmed items.
+ * @param {string} orderNum The order number.
+ * @returns {{id: string, url: string, name: string}} Object containing new sheet ID, URL, and Name.
+ * @throws {Error} If order data or templates are not found, or population fails.
+ */
 function populateKitchenSheet(orderNum) {
   const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
   if (!orderDataString) { console.error("KitchenSheet: Order data for " + orderNum + " not found."); throw new Error("Order data not found for kitchen sheet: " + orderNum); }
@@ -516,9 +634,11 @@ function populateKitchenSheet(orderNum) {
     if (!templateSheet) { console.error("Kitchen sheet template '" + KITCHEN_SHEET_TEMPLATE_NAME + "' not found."); throw new Error("Kitchen sheet template not found."); }
     const newSheetName = `Kitchen - ${orderNum} - ${orderData['Contact Person'] || orderData['Ordering Person Name'] || 'Unknown'}`.substring(0,100); 
     const newSheet = templateSheet.copyTo(spreadsheet).setName(newSheetName);
-    const customerNameForKitchen = orderData['Contact Person'] || orderData['Ordering Person Name'] || ''; // Prioritize Contact Person
-    const contactPhoneForKitchen = orderData['Contact Phone'] || data['Ordering Person Email'] || 'N/A'; // Prioritize Contact Phone
+    
+    const customerNameForKitchen = orderData['Contact Person'] || orderData['Customer Name'] || orderData['Ordering Person Name'] || ''; // Prioritize Contact Person
+    const contactPhoneForKitchen = _formatPhone(orderData['Contact Phone'] || orderData['Customer Address Phone'] || ''); // Prioritize Contact Phone from form
     newSheet.getRange(KITCHEN_CUSTOMER_PHONE_CELL).setValue(`${customerNameForKitchen} - Ph: ${contactPhoneForKitchen}`);
+    
     let deliveryDateFormatted = orderData['Delivery Date'];
     if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { 
         deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy");
@@ -527,6 +647,7 @@ function populateKitchenSheet(orderNum) {
     }
     newSheet.getRange(KITCHEN_DELIVERY_DATE_CELL).setValue(deliveryDateFormatted || '');
     newSheet.getRange(KITCHEN_DELIVERY_TIME_CELL).setValue(orderData['Delivery Time'] || '');
+    
     let currentRow = KITCHEN_ITEM_START_ROW;
     confirmedItems.forEach(item => {
       const masterItem = masterAllItems.find(mi => mi.SKU === item.sku); const itemSize = masterItem ? (masterItem.Size || '') : '';
@@ -537,10 +658,17 @@ function populateKitchenSheet(orderNum) {
       newSheet.getRange(KITCHEN_NOTES_COL + currentRow).setValue(''); 
       currentRow++;
     });
-    SpreadsheetApp.flush(); return { id: spreadsheet.getId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
+    SpreadsheetApp.flush();
+    return { id: newSheet.getSheetId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
   } catch (e) { console.error("Error in populateKitchenSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to populate kitchen sheet: " + e.message); }
 }
 
+/**
+ * Populates a new invoice sheet with order details and confirmed items.
+ * @param {string} orderNum The order number.
+ * @returns {{id: string, url: string, name: string}} Object containing new sheet ID, URL, and Name.
+ * @throws {Error} If order data or templates are not found, or population fails.
+ */
 function populateInvoiceSheet(orderNum) {
   const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
   if (!orderDataString) { console.error("InvoiceSheet: Order data for " + orderNum + " not found."); throw new Error("Order data not found for " + orderNum); }
@@ -549,30 +677,35 @@ function populateInvoiceSheet(orderNum) {
   try {
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID); const templateSheet = spreadsheet.getSheetByName(INVOICE_TEMPLATE_SHEET_NAME);
     if (!templateSheet) { console.error("Invoice template sheet '" + INVOICE_TEMPLATE_SHEET_NAME + "' not found."); throw new Error("Invoice template sheet not found."); }
-    const newSheetName = `Invoice - ${orderNum} - ${orderData['Contact Person'] || orderData['Customer Name'] || 'Unknown'}`.substring(0,100); 
+    const newSheetName = `Invoice - ${orderNum} - ${orderData['Customer Name'] || 'Unknown'}`.substring(0,100); 
     const newSheet = templateSheet.copyTo(spreadsheet).setName(newSheetName);
+    
     newSheet.getRange(ORDER_NUM_CELL).setValue(orderData.orderNum);
-    newSheet.getRange(CUSTOMER_NAME_CELL).setValue(orderData['Contact Person'] || orderData['Customer Name'] || ''); 
+    newSheet.getRange(CUSTOMER_NAME_CELL).setValue(orderData['Customer Name'] || ''); 
     newSheet.getRange(ADDRESS_LINE_1_CELL).setValue(orderData['Customer Address Line 1'] || '');
     newSheet.getRange(ADDRESS_LINE_2_CELL).setValue(orderData['Customer Address Line 2'] || '');
+    
     const cityStateZip = `${orderData['Customer Address City'] || ''}${orderData['Customer Address City'] && (orderData['Customer Address State'] || orderData['Customer Address ZIP']) ? ', ' : ''}${orderData['Customer Address State'] || ''} ${orderData['Customer Address ZIP'] || ''}`.trim();
     newSheet.getRange(CITY_STATE_ZIP_CELL).setValue(cityStateZip);
+    
     let deliveryDateFormatted = orderData['Delivery Date'];
-     if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { 
+    if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { 
         deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy");
     } else if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && deliveryDateFormatted.match(/^\d{4}-\d{2}-\d{2}/)) {
         deliveryDateFormatted = Utilities.formatDate(new Date(deliveryDateFormatted.replace(/-/g, '/')), Session.getScriptTimeZone(), "MM/dd/yyyy");
     }
     newSheet.getRange(DELIVERY_DATE_CELL_INVOICE).setValue(deliveryDateFormatted || '');
     newSheet.getRange(DELIVERY_TIME_CELL_INVOICE).setValue(orderData['Delivery Time'] || '');
-    let currentRow = ITEM_START_ROW_INVOICE; let grandTotal = 0;
+    
+    let currentRow = ITEM_START_ROW_INVOICE;
+    let grandTotal = 0;
     confirmedItems.forEach(item => {
       const descriptionCell = newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow);
       descriptionCell.setValue(item.original_email_description || item.quickbooks_item_name).setWrap(false); 
       newSheet.getRange(ITEM_QTY_COL_INVOICE + currentRow).setValue(item.quantity);
-      newSheet.getRange(ITEM_UNIT_PRICE_COL_INVOICE + currentRow).setValue(item.unit_price).setNumberFormat("$#,##0.00"); 
-      const lineTotal = (item.quantity || 0) * (item.unit_price || 0);
-      newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(lineTotal).setNumberFormat("$#,##0.00"); 
+      newSheet.getRange(ITEM_UNIT_PRICE_COL_INVOICE + currentRow).setValue(item.unit_price).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\); 
+const lineTotal \= \(item\.quantity \|\| 0\) \* \(item\.unit\_price \|\| 0\);
+newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(lineTotal\)\.setNumberFormat\("</span>#,##0.00"); 
       grandTotal += lineTotal; currentRow++;
     });
 
@@ -583,13 +716,13 @@ function populateInvoiceSheet(orderNum) {
 
     if (tipAmount > 0) {
         newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue("Tip").setWrap(false);
-        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(tipAmount).setNumberFormat("$#,##0.00");
-        grandTotal += tipAmount;
-        currentRow++;
-    }
-    if (otherChargesAmount > 0) {
-        newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(otherChargesDescription).setWrap(false);
-        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(otherChargesAmount).setNumberFormat("$#,##0.00");
+        newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(tipAmount).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\);
+grandTotal \+\= tipAmount;
+currentRow\+\+;
+\}
+if \(otherChargesAmount \> 0\) \{
+newSheet\.getRange\(ITEM\_DESCRIPTION\_COL\_INVOICE \+ currentRow\)\.setValue\(otherChargesDescription\)\.setWrap\(false\);
+newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\)\.setValue\(otherChargesAmount\)\.setNumberFormat\("</span>#,##0.00");
         grandTotal += otherChargesAmount;
         currentRow++;
     }
@@ -613,22 +746,30 @@ function populateInvoiceSheet(orderNum) {
         if (numUtensils > 0) {
             const utensilTotalCost = numUtensils * COST_PER_UTENSIL_SET;
             newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(`Utensils (${numUtensils} sets)`).setWrap(false);
-            newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(utensilTotalCost).setNumberFormat("$#,##0.00");
-            grandTotal += utensilTotalCost;
-            currentRow++;
-        }
-    }
-
-
-    const grandTotalDescCell = newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow);
-    grandTotalDescCell.setValue("Grand Total:").setFontWeight("bold").setWrap(false);
-    const grandTotalValueCell = newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow);
-    grandTotalValueCell.setValue(grandTotal).setNumberFormat("$#,##0.00").setFontWeight("bold").setHorizontalAlignment("right").setWrap(false);
+            newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(utensilTotalCost).setNumberFormat("<span class="math-inline">\#,\#\#0\.00"\);
+grandTotal \+\= utensilTotalCost;
+currentRow\+\+;
+\}
+\}
+const grandTotalDescCell \= newSheet\.getRange\(ITEM\_DESCRIPTION\_COL\_INVOICE \+ currentRow\);
+grandTotalDescCell\.setValue\("Grand Total\:"\)\.setFontWeight\("bold"\)\.setWrap\(false\);
+const grandTotalValueCell \= newSheet\.getRange\(ITEM\_TOTAL\_PRICE\_COL\_INVOICE \+ currentRow\);
+grandTotalValueCell\.setValue\(grandTotal\)\.setNumberFormat\("</span>#,##0.00").setFontWeight("bold").setHorizontalAlignment("right").setWrap(false);
     newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow + ":" + ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setBorder(true, null, null, null, null, true, "black", SpreadsheetApp.BorderStyle.SOLID_MEDIUM);
-    SpreadsheetApp.flush(); return { id: spreadsheet.getId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
+    
+    SpreadsheetApp.flush();
+    return { id: newSheet.getSheetId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
   } catch (e) { console.error("Error in populateInvoiceSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to populate invoice sheet: " + e.message); }
 }
 
+/**
+ * Creates a PDF of the populated invoice sheet and prepares a draft email reply with it attached.
+ * @param {string} orderNum The order number.
+ * @param {string} populatedSheetSpreadsheetId The ID of the spreadsheet containing the populated invoice sheet.
+ * @param {string} populatedSheetName The name of the populated invoice sheet.
+ * @returns {{pdfBlob: GoogleAppsScript.Base.Blob, draft: GoogleAppsScript.Gmail.GmailDraft, draftId: string}} Object containing PDF blob, draft object, and draft ID.
+ * @throws {Error} If order data or sheets are not found, or PDF/email creation fails.
+ */
 function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, populatedSheetName) {
   const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
   if (!orderDataString) { console.error("PDFEmail: Order data for " + orderNum + " not found."); throw new Error("Order data not found for PDF/email creation.");}
@@ -637,21 +778,30 @@ function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, po
     console.log(`PDFEmail: Opening spreadsheet ID: ${populatedSheetSpreadsheetId}, Sheet: ${populatedSheetName}`);
     const spreadsheet = SpreadsheetApp.openById(populatedSheetSpreadsheetId); const sheetToExport = spreadsheet.getSheetByName(populatedSheetName);
     if (!sheetToExport) { console.error(`PDFEmail: Sheet "${populatedSheetName}" not found.`); throw new Error("Populated invoice sheet not found for PDF generation."); }
-    console.log(`PDFEmail: Sheet "${populatedSheetName}" found. Hiding others.`);
+    
+    console.log(`PDFEmail: Sheet "${populatedSheetName}" found. Hiding others temporarily for PDF generation.`);
     const allSheets = spreadsheet.getSheets(); const hiddenSheetIds = [];
     allSheets.forEach(sheet => { if (sheet.getSheetId() !== sheetToExport.getSheetId()) { sheet.hideSheet(); hiddenSheetIds.push(sheet.getSheetId()); }});
-    SpreadsheetApp.flush(); console.log("PDFEmail: Other sheets hidden.");
-    const pdfBlob = spreadsheet.getAs('application/pdf').setName(`${populatedSheetName}.pdf`); console.log(`PDFEmail: PDF blob created: ${pdfBlob.getName()}`);
+    SpreadsheetApp.flush(); // Ensure changes are applied before PDF generation
+    
+    const pdfBlob = sheetToExport.getAs('application/pdf').setName(`${populatedSheetName}.pdf`); // Export only the specific sheet
+    console.log(`PDFEmail: PDF blob created: ${pdfBlob.getName()}`);
+    
+    // Unhide sheets immediately after PDF generation
     hiddenSheetIds.forEach(id => { const sheet = allSheets.find(s => s.getSheetId() === id); if (sheet) sheet.showSheet(); });
-    SpreadsheetApp.flush(); console.log("PDFEmail: Sheets unhidden.");
+    SpreadsheetApp.flush(); // Ensure changes are applied
+    console.log("PDFEmail: Sheets unhidden.");
+    
     const threadId = orderData.threadId;
     if (!threadId) { console.error("PDFEmail: Thread ID missing for order " + orderNum); throw new Error("Original email thread ID not found."); }
     const thread = GmailApp.getThreadById(threadId);
     if (!thread) { console.error("PDFEmail: Could not retrieve Gmail thread ID: " + threadId); throw new Error("Could not retrieve original email thread."); }
-    const messages = thread.getMessages(); const messageToReplyTo = messages[messages.length - 1];
-    const recipient = orderData['Contact Email'] || orderData['Ordering Person Email']; // Prioritize Contact Email if explicitly set
+    const messages = thread.getMessages(); const messageToReplyTo = messages[messages.length - 1]; // Reply to the last message in the thread
+    
+    const recipient = orderData['Contact Email'] || orderData['Customer Address Email'] || orderData['Ordering Person Email']; // Prioritize Contact Email if explicitly set
     const subject = `Re: Catering Order Confirmation - ${orderNum}`;
-    const body = `Dear ${orderData['Contact Person'] || orderData['Ordering Person Name'] || 'Valued Customer'},\n\nPlease find attached the invoice for your recent catering order (${orderNum}).\n\nDelivery is scheduled for ${orderData['Delivery Date']} around ${orderData['Delivery Time']}.\n\nThank you for your business!\n\nBest regards,\n[Your Company Name]`;
+    const body = `Dear ${orderData['Contact Person'] || orderData['Customer Name'] || 'Valued Customer'},\n\nPlease find attached the invoice for your recent catering order (${orderNum}).\n\nDelivery is scheduled for ${orderData['Delivery Date']} around ${orderData['Delivery Time']}.\n\nThank you for your business!\n\nBest regards,\n[Your Company Name]`;
+    
     console.log(`PDFEmail: Preparing draft reply to: ${recipient}`);
     const draft = messageToReplyTo.createDraftReply(body, { htmlBody: body.replace(/\n/g, '<br>'), attachments: [pdfBlob], to: recipient });
     console.log("PDFEmail: Draft email created. ID: " + draft.getId());
@@ -659,6 +809,10 @@ function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, po
   } catch (e) { console.error("Error in createPdfAndPrepareEmailReply for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to create PDF or prepare email: " + e.message); }
 }
 
+/**
+ * Retrieves master QuickBooks items from the designated Google Sheet.
+ * @returns {Array<object>} An array of item objects.
+ */
 function getMasterQBItems() {
   try {
     const spreadsheet = SpreadsheetApp.openById(SHEET_ID); const sheet = spreadsheet.getSheetByName(ITEM_LOOKUP_SHEET_NAME);
@@ -680,10 +834,16 @@ function getMasterQBItems() {
   } catch (e) { console.error("Error in getMasterQBItems: " + e.toString()); return []; }
 }
 
+/**
+ * Uses Gemini to match email items to master QuickBooks items.
+ * @param {Array<object>} emailItems Items extracted from the email.
+ * @param {Array<object>} masterQBItems The master list of QuickBooks items.
+ * @returns {Array<object>} Matched items with QB details.
+ */
 function getGeminiItemMatches(emailItems, masterQBItems) {
   if (!emailItems || emailItems.length === 0) return [];
   if (!masterQBItems || masterQBItems.length === 0) { 
-    console.warn("Master QB Items list is empty in getGeminiItemMatches.");
+    console.warn("Master QB Items list is empty in getGeminiItemMatches. Falling back to custom SKU.");
     return emailItems.map(item => ({
       original_email_description: item.description, extracted_main_quantity: item.quantity,
       matched_qb_item_id: FALLBACK_CUSTOM_ITEM_SKU, matched_qb_item_name: "Custom Item (No Master List)",
@@ -691,174 +851,30 @@ function getGeminiItemMatches(emailItems, masterQBItems) {
       identified_flavors: [] 
     }));
   }
-  const masterItemDetailsForPrompt = masterQBItems.map(item => {
-    let detailString = `- Name: "${item.Name}" (SKU: ${item.SKU}, Price: $${item.Price !== undefined ? item.Price.toFixed(2) : '0.00'})`; 
-    if (item.Category) detailString += ` [Category: ${item.Category}]`; if (item.Item && item.Item !== item.Name) detailString += ` [Base Item: ${item.Item}]`;
-    if (item.Subtype) detailString += ` [Type: ${item.Subtype}]`; if (item.Size) detailString += ` [Size: ${item.Size}]`; if (item.Descriptor) detailString += ` [Details: ${item.Descriptor}]`;
-    const flavors = [item['Flavor 1'], item['Flavor 2'], item['Flavor 3'], item['Flavor 4'], item['Flavor 5']].filter(f => f && f.toString().trim() !== "").join('; ');
-    if (flavors) detailString += ` [Std Flavors: ${flavors}]`; return detailString;
-  }).join('\n');
-  const emailItemDetailsForPrompt = emailItems.map((item, index) => `${index + 1}. Email Line: "${item.description}" (Ordered Quantity: ${item.quantity})`).join('\n');
-  const fallbackQBItem = masterQBItems.find(item => item.SKU === FALLBACK_CUSTOM_ITEM_SKU);
-  const fallbackSkuForPrompt = fallbackQBItem ? fallbackQBItem.SKU : FALLBACK_CUSTOM_ITEM_SKU; 
-  const fallbackNameForPrompt = fallbackQBItem ? fallbackQBItem.Name : "Custom Unmatched Item";
-  const prompt = `
-    You are an item matching assistant for a catering business. Match items from an email order to a QuickBooks item list.
-    Email Order Items (includes quantity ordered for the line, and full description from email):
-    ${emailItemDetailsForPrompt}
-    QuickBooks Master Item List (includes item name, SKU, price, category, and other descriptive details):
-    ${masterItemDetailsForPrompt}
-    For EACH "Email Line" provided:
-    1. "original_email_description": The full description text from the "Email Line".
-    2. "extracted_main_quantity": The "Ordered Quantity" associated with that "Email Line" (as a string).
-    3. "matched_qb_item_id": The "SKU" from the QuickBooks Master Item List that is the BEST match for the main item in the email line. This SKU will be used as the QuickBooks Item ID.
-    4. "matched_qb_item_name": The "Name" from the QuickBooks Master Item List corresponding to the "matched_qb_item_id" (SKU).
-    5. "match_confidence": Your confidence in this match (choose one: High, Medium, Low).
-    6. "parsed_flavors_or_details": The full string of specific flavors, sub-quantities, modifiers, or special instructions mentioned in the email line for this item. If none, make this an empty string.
-    7. "identified_flavors": An ARRAY of distinct flavor names parsed from "parsed_flavors_or_details". Example: ["3 Chile Chicken (spicy)", "Chicken and Cheese"]. If no distinct flavors are identifiable, return an empty array [].
-    Important Matching Rules:
-    - If an "Email Line" does not match any specific item well, use the fallback SKU "${fallbackSkuForPrompt}" and name "${fallbackNameForPrompt}" for "matched_qb_item_id" and "matched_qb_item_name", set "match_confidence" to "Low", and "identified_flavors" to an empty array.
-    - Prioritize clear matches based on Name, Item, Size, and keywords in Descriptor.
-    - Do NOT invent new QuickBooks items, SKUs, or names. Only use SKUs and names from the provided QuickBooks Master Item List.
-    Return ONLY a valid JSON array of objects. Ensure "extracted_main_quantity" is a string.
-    [ { "original_email_description": "...", "extracted_main_quantity": "...", "matched_qb_item_id": "...", "matched_qb_item_name": "...", "match_confidence": "High", "parsed_flavors_or_details": "...", "identified_flavors": [] } ]`;
+  
+  const prompt = _buildItemMatchingPrompt(emailItems, masterQBItems);
   console.log("Prompt for getGeminiItemMatches (first 500 chars):\n" + prompt.substring(0, 500)); 
-  const geminiResponseText = callGemini(prompt); console.log("Raw response from getGeminiItemMatches: " + geminiResponseText);
+  const geminiResponseText = callGemini(prompt);
+  console.log("Raw response from getGeminiItemMatches: " + geminiResponseText);
+  
   try {
     const parsedResponse = _parseJson(geminiResponseText);
-    if (Array.isArray(parsedResponse)) { return parsedResponse.map(item => ({ ...item, identified_flavors: item.identified_flavors || [] })) ; } 
-    else { console.error("Parsed Gemini response is not an array: " + JSON.stringify(parsedResponse)); throw new Error("Parsed response is not an array."); }
+    if (Array.isArray(parsedResponse)) {
+      // Ensure identified_flavors is always an array
+      return parsedResponse.map(item => ({ ...item, identified_flavors: item.identified_flavors || [] })) ;
+    } else {
+      console.error("Parsed Gemini response is not an array: " + JSON.stringify(parsedResponse));
+      throw new Error("Parsed response is not an array.");
+    }
   } catch (e) {
     console.error("Error parsing Gemini item matching response: " + e.toString() + " Raw response for parse error: " + geminiResponseText);
+    const fallbackQBItem = masterQBItems.find(item => item.SKU === FALLBACK_CUSTOM_ITEM_SKU);
+    const fallbackSkuForError = fallbackQBItem ? fallbackQBItem.SKU : FALLBACK_CUSTOM_ITEM_SKU;
+    const fallbackNameForError = fallbackQBItem ? fallbackQBItem.Name : "Custom Unmatched Item";
     return emailItems.map(item => ({ 
       original_email_description: item.description, extracted_main_quantity: item.quantity,
-      matched_qb_item_id: fallbackSkuForPrompt, matched_qb_item_name: fallbackNameForPrompt + " (AI Error)",
+      matched_qb_item_id: fallbackSkuForError, matched_qb_item_name: fallbackNameForError + " (AI Error)",
       match_confidence: "Low", parsed_flavors_or_details: "AI matching error occurred.", identified_flavors: []
     }));
   }
-}
-
-function _formatPhone(phone) { if (!phone) return ''; const digits = phone.replace(/\D/g, ''); if (digits.length === 10) { return `(${digits.substr(0, 3)}) ${digits.substr(3, 3)}-${digits.substr(6)}`; } return phone; }
-function _buildContactInfoPrompt(body) { return 'Extract the following fields from this email and return ONLY a JSON object with no extra commentary:\nCustomer Name\nCustomer Address Line 1\nCustomer Address Line 2\nCustomer Address City\nCustomer Address State\nCustomer Address ZIP\nCustomer Address Phone\nDelivery Date\nDelivery Time\nInclude Utensils?\nIf yes: how many?\nContact Person\nContact Phone\nContact Email\n\nEmail:\n' + body; }
-function _buildStructuredItemExtractionPrompt(body) { return 'From the email body provided, extract ONLY the ordered items. It is CRITICAL to treat each line in the order section of the email that appears to request a product as a SEPARATE item in the output array. For example, if the email says "1 Small Cheesy Rice" and on a new line "1 Small Cheesy Rice (Vegan)", these must be two distinct entries in the JSON. For each distinct item line, provide its "quantity" as a string and a "description" string that is the clean, full text from that line, including all modifiers, flavors, and sub-quantities mentioned for that specific line. Return as JSON in the format:\n{ "Items Ordered": [ { "quantity": "1", "description": "Large Hilacha Chicken" }, { "quantity": "1", "description": "Small Cheesy Rice" }, { "quantity": "1", "description": "Small Cheesy Rice (Vegan)" }, {"quantity": "1", "description": "Large Taquitos Tray (12 Chile Chicken, 20 Chicken and Cheese, 8 Jackfruit)"} ] }\n\nOnly include food and tray items. Do not include headers, greetings, closings, or other conversational text from the email. Ensure quantities are extracted as strings.\n\nEmail:\n' + body; }
-function callGemini(prompt) { if (!API_KEY) { console.error("Error: GL_API_KEY is not set."); throw new Error("No API key set."); } const url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=' + encodeURIComponent(API_KEY); const payload = { contents: [{ role: "user", parts: [{ text: prompt }] }] }; const options = { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true }; console.log("Calling Gemini. Prompt length: " + prompt.length); const response = UrlFetchApp.fetch(url, options); const responseCode = response.getResponseCode(); const responseBody = response.getContentText(); if (responseCode === 200) { const json = JSON.parse(responseBody); if (json.candidates && json.candidates.length > 0 && json.candidates[0].content && json.candidates[0].content.parts && json.candidates[0].content.parts.length > 0) { return json.candidates[0].content.parts[0].text; } else { console.error("Gemini response missing expected structure: " + responseBody); if (json.candidates && json.candidates[0] && json.candidates[0].finishReason) { console.error("Gemini finishReason: " + json.candidates[0].finishReason); if (json.candidates[0].safetyRatings) { console.error("SafetyRatings: " + JSON.stringify(json.candidates[0].safetyRatings)); } if (json.candidates[0].finishReason === "SAFETY" || json.candidates[0].finishReason === "OTHER") { throw new Error("Gemini request blocked due to: " + json.candidates[0].finishReason + ". Check safety ratings in log."); } } throw new Error("Invalid Gemini response structure. See logs."); } } else { console.error("Gemini API Error - Code: " + responseCode + " Body: " + responseBody); throw new Error("Gemini API request failed. Code: " + responseCode + ". See logs for details."); } }
-function _parseJson(raw) { if (!raw || typeof raw !== 'string') { console.error("Error in _parseJson: Input is not a valid string or is empty. Input: " + raw); return {}; } try { const cleanedJsonString = raw.replace(/^```json\s*([\s\S]*?)\s*```$/, '$1').trim(); return JSON.parse(cleanedJsonString); } catch (e) { console.error("Error in _parseJson (first attempt): " + e.toString() + ". Raw input: " + raw); const match = raw.match(/\{[\s\S]*\}|\[[\s\S]*\]/); if (match && match[0]) { try { return JSON.parse(match[0]); } catch (e2) { console.error("Error in _parseJson (fallback attempt): " + e2.toString() + ". Matched string: " + match[0]); throw new Error('Invalid JSON response from AI after attempting to clean: ' + raw); } } throw new Error('Invalid JSON response from AI, and no object/array found: ' + raw); } }
-function _extractNameFromEmail(email) { if (!email) return ''; const match = email.match(/^(.*?)</); if (match && match[1]) return match[1].trim(); const namePart = email.split('@')[0]; return namePart.replace(/[._\d]+$/, '').replace(/[._]/g, ' ').trim();  }
-
-function _matchClient(senderEmailField) {
-  if (!senderEmailField) return 'Unknown';
-  let emailAddress = senderEmailField; // Assume it's already just the email
-  // Robustly extract email if in "Display Name <email@example.com>" format
-  const emailMatch = senderEmailField.match(/<([^>]+)>/);
-  if (emailMatch && emailMatch[1]) {
-    emailAddress = emailMatch[1];
-  }
-  
-  const emailLower = emailAddress.toLowerCase().trim();
-  console.log("Matching client for extracted email: " + emailLower);
-
-  // CLIENT_RULES_LOOKUP is already sorted by rule length, descending.
-  for (let i = 0; i < CLIENT_RULES_LOOKUP.length; i++) {
-    const clientRule = CLIENT_RULES_LOOKUP[i];
-    const rule = clientRule.rule.toLowerCase().trim();
-    const name = clientRule.clientName.trim();
-    if (rule && emailLower.includes(rule)) { 
-      console.log("Client matched: " + name + " for email " + emailAddress + " with rule " + rule);
-      return name; 
-    }
-  }
-  console.log("No client match for email: " + emailAddress);
-  return 'Unknown';
-}
-
-function _extractActualEmail(senderEmailField) {
-    if (!senderEmailField) return '';
-    const emailMatch = senderEmailField.match(/<([^>]+)>/);
-    if (emailMatch && emailMatch[1]) {
-        return emailMatch[1].trim();
-    }
-    return senderEmailField.trim(); // Assume it's already just the email
-}
-
-function _parseDateToMsEpoch(dateString) {
-  if (!dateString || typeof dateString !== 'string') { return new Date().getTime(); }
-  let date; const currentYear = new Date().getFullYear();
-  if (dateString.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) { date = new Date(dateString); } // MM/DD/YYYY
-  else if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) { date = new Date(dateString.replace(/-/g, '/')); } // YYYY-MM-DD
-  else if (dateString.match(/^\d{1,2}\/\d{1,2}$/)) { // MM/DD
-    const parts = dateString.split('/');
-    date = new Date(currentYear, parseInt(parts[0]) - 1, parseInt(parts[1]));
-  } else { // Try direct parsing for other formats (e.g., "May 20", "May 20 2025")
-    date = new Date(dateString);
-    // If direct parsing results in a year far in the past (e.g. 1970 for "May 20"), set to current year
-    if (date && date.getFullYear() < 2000) { 
-        date.setFullYear(currentYear);
-    }
-  }
-  if (isNaN(date.getTime())) { // If still invalid
-    return new Date().getTime(); // Default to now
-  }
-  return date.getTime();
-}
-
-// Helper to combine date (from DatePicker, in ms) and time (string like "7:00 PM") into a single ms timestamp
-function _combineDateAndTime(dateMs, timeStr) {
-    if (!dateMs || !timeStr) return dateMs || new Date().getTime();
-
-    const dateObj = new Date(dateMs);
-    let hours = 0;
-    let minutes = 0;
-
-    const timeParts = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-    if (timeParts) {
-        hours = parseInt(timeParts[1]);
-        minutes = parseInt(timeParts[2]);
-        const ampm = timeParts[3] ? timeParts[3].toUpperCase() : null;
-
-        if (ampm === 'PM' && hours < 12) {
-            hours += 12;
-        } else if (ampm === 'AM' && hours === 12) { // Midnight case
-            hours = 0;
-        }
-    } else { // Try parsing if it's just HH:MM (24-hour)
-        const simpleTimeParts = timeStr.match(/(\d{1,2}):(\d{2})/);
-        if (simpleTimeParts) {
-            hours = parseInt(simpleTimeParts[1]);
-            minutes = parseInt(simpleTimeParts[2]);
-        } else {
-            return dateMs; // Cannot parse time, return original dateMs
-        }
-    }
-    dateObj.setHours(hours, minutes, 0, 0); // Set hours and minutes, reset seconds/ms
-    return dateObj.getTime();
-}
-
-
-// Helper function to safely set SelectionInput type
-function _setSelectionInputTypeSafely(selectionInput, typeEnum, widgetNameForLog) {
-    try {
-        if (typeof CardService === 'undefined' || CardService === null || 
-            typeof CardService.SelectionInputType === 'undefined' || CardService.SelectionInputType === null) {
-            console.error(`CardService or CardService.SelectionInputType is undefined. Cannot set type for ${widgetNameForLog}.`);
-            return;
-        }
-
-        let typeValue;
-        if (typeof typeEnum === 'string' && CardService.SelectionInputType[typeEnum] !== undefined) {
-            typeValue = CardService.SelectionInputType[typeEnum];
-        } else if (Object.values(CardService.SelectionInputType).includes(typeEnum)) {
-            typeValue = typeEnum;
-        } else {
-            console.error(`SelectionInputType "${typeEnum}" is not a valid key or value in CardService.SelectionInputType for ${widgetNameForLog}.`);
-            return;
-        }
-        
-        if (selectionInput && typeof selectionInput.setType === 'function') {
-            selectionInput.setType(typeValue);
-        } else {
-            console.error(`Cannot call setType on ${widgetNameForLog}. Object is not a valid SelectionInput or setType method is missing. Object type: ${typeof selectionInput}`);
-        }
-    } catch (err) {
-        console.error(`Error setting type for ${widgetNameForLog}: ${err.toString()}`);
-    }
 }
