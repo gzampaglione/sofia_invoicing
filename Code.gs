@@ -1,18 +1,19 @@
 // === USER INSTRUCTIONS FOR REVIEWING REGENERATED CODE ===
-// 1. API Key: Ensure 'GL_API_KEY' is correctly set in Script Properties.
-// 2. Sheet Configuration:
+// 1. Manifest Update: If you implement the createHomepageCard, update `onTriggerFunction` in appsscript.json.
+//    For now, the primary entry point for the catering workflow is buildAddOnCard.
+// 2. API Key: Ensure 'GL_API_KEY' is correctly set in Script Properties.
+// 3. Sheet Configuration:
 //    - SHEET_ID: Verify this points to your main Google Sheet.
 //    - ITEM_LOOKUP_SHEET_NAME: Verify tab name for your master item list.
 //    - INVOICE_TEMPLATE_SHEET_NAME: Verify tab name for your invoice template.
 //    - KITCHEN_SHEET_TEMPLATE_NAME: Verify tab name for your kitchen sheet template.
-//    - FALLBACK_CUSTOM_ITEM_SKU: Ensure an item with this SKU exists in your "Item Lookup" sheet
-//      (e.g., SKU: "CUSTOM_SKU", Name: "Custom Unmatched Item", Price: 0).
-// 3. Client Rules: The CLIENT_RULES_LOOKUP constant now holds client matching rules. Update it as needed.
-// 4. Permissions (OAuth Scopes): This script interacts with Gmail, Sheets, and Drive (for PDFs).
-//    Ensure your appsscript.json manifest includes necessary scopes.
-// 5. Testing: Test incrementally. Use Logger.log() (or console.log() for Cloud Logging) for debugging.
-// 6. Prompts: Review Gemini prompts to ensure they align with your data extraction and matching needs.
-// 7. Invoice & Kitchen Template Cell Mapping: Carefully review all cell/column mapping constants
+//    - FALLBACK_CUSTOM_ITEM_SKU: Ensure an item with this SKU exists in your "Item Lookup" sheet.
+// 4. Client Rules: The CLIENT_RULES_LOOKUP constant now holds client matching rules. Update it as needed.
+// 5. Permissions (OAuth Scopes): This script interacts with Gmail, Sheets, and Drive (for PDFs).
+//    Ensure your appsscript.json manifest includes necessary scopes (see previous discussion for examples).
+// 6. Testing: Test incrementally. Use console.log() (for Cloud Logging) or Logger.log() for debugging.
+// 7. Prompts: Review Gemini prompts to ensure they align with your data extraction and matching needs.
+// 8. Invoice & Kitchen Template Cell Mapping: Carefully review all cell/column mapping constants
 //    and adjust them to EXACTLY match your respective sheet layouts.
 // === END USER INSTRUCTIONS ===
 
@@ -34,7 +35,7 @@ const CLIENT_RULES_LOOKUP = [
 
 // === INVOICE TEMPLATE CELL MAPPING CONSTANTS ===
 const ORDER_NUM_CELL = "D7";
-const CUSTOMER_NAME_CELL = "B12"; // This will now prioritize 'Contact Person'
+const CUSTOMER_NAME_CELL = "B12";
 const ADDRESS_LINE_1_CELL = "B13";
 const ADDRESS_LINE_2_CELL = "B14";
 const CITY_STATE_ZIP_CELL = "B15";
@@ -48,44 +49,77 @@ const ITEM_UNIT_PRICE_COL_INVOICE = "F";
 const ITEM_TOTAL_PRICE_COL_INVOICE = "G";
 
 // === KITCHEN SHEET TEMPLATE CELL MAPPING CONSTANTS ===
-const KITCHEN_CUSTOMER_PHONE_CELL = "B1"; // This will now prioritize 'Contact Person'
+const KITCHEN_CUSTOMER_PHONE_CELL = "B1";
 const KITCHEN_DELIVERY_DATE_CELL = "C9";
 const KITCHEN_DELIVERY_TIME_CELL = "F9";
 
 const KITCHEN_ITEM_START_ROW = 12;
-const KITCHEN_QTY_COL = "B";         // Updated based on user feedback
-const KITCHEN_SIZE_COL = "C";        // Updated
-const KITCHEN_ITEM_NAME_COL = "D";   // Updated
-const KITCHEN_FILLING_COL = "E";     // Updated
-const KITCHEN_NOTES_COL = "F";       // Updated
+const KITCHEN_QTY_COL = "B";
+const KITCHEN_SIZE_COL = "C";
+const KITCHEN_ITEM_NAME_COL = "D";
+const KITCHEN_FILLING_COL = "E";
+const KITCHEN_NOTES_COL = "F";
 
 
-// === ENTRY POINT ===
-// This is the main entry point if your manifest points here directly for contextual triggers.
-// If using a homepage, the homepage button would call this.
+// === HOMEPAGE CARD (Primary Entry Point if manifest is updated) ===
+function createHomepageCard(e) {
+  console.log("createHomepageCard triggered. Event: " + JSON.stringify(e));
+  const card = CardService.newCardBuilder();
+  card.setHeader(CardService.newCardHeader().setTitle("Select Workflow"));
+  const section = CardService.newCardSection();
+
+  const processEmailAction = CardService.newAction()
+    .setFunctionName("buildAddOnCard")
+    // Pass the original event parameters, which might include messageId if triggered contextually
+    // or if the homepage itself was triggered by opening a message.
+    .setParameters(e && e.parameters ? e.parameters : (e ? e : {}));
+
+
+  section.addWidget(CardService.newTextButton().setText("Process Incoming Catering Email").setOnClickAction(processEmailAction).setTextButtonStyle(CardService.TextButtonStyle.FILLED));
+  const pennInvoiceAction = CardService.newAction().setFunctionName("handlePennInvoiceWorkflowPlaceholder");
+  section.addWidget(CardService.newTextButton().setText("Process Penn Invoice (Coming Soon)").setOnClickAction(pennInvoiceAction).setDisabled(true));
+  card.addSection(section);
+  return card.build();
+}
+
+// Placeholder for Penn Invoice workflow
+function handlePennInvoiceWorkflowPlaceholder(e) {
+  const card = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Penn Invoice Workflow"))
+    .addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("This feature is under development.")))
+    .build();
+  return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(card)).build();
+}
+
+
+// === ENTRY POINT for Catering Email Workflow (can be called from homepage or directly) ===
 function buildAddOnCard(e) {
-  // Robustly get messageId from the event object
+  console.log("buildAddOnCard triggered. Event: " + JSON.stringify(e));
   let msgId;
+
+  // Try to get messageId from various possible event structures
   if (e && e.messageMetadata && e.messageMetadata.messageId) {
     msgId = e.messageMetadata.messageId;
-  } else if (e && e.gmail && e.gmail.messageId) { // Common structure for Gmail events
+  } else if (e && e.gmail && e.gmail.messageId) {
     msgId = e.gmail.messageId;
-  } else if (e && e.commonEventObject && e.commonEventObject.messageMetadata && e.commonEventObject.messageMetadata.messageId) {
-    msgId = e.commonEventObject.messageMetadata.messageId;
+  } else if (e && e.parameters && e.parameters.messageId) { // If passed from homepage via parameters
+    msgId = e.parameters.messageId;
   } else {
-     // Fallback if no direct messageId, try to get current message (less reliable if not a contextual trigger)
-    const currentMessage = GmailApp.getCurrentMessage();
-    if (currentMessage) {
-        msgId = currentMessage.getId();
-        console.log("buildAddOnCard: Using current open message ID: " + msgId);
+    const currentEventObject = e.commonEventObject || e;
+    if (currentEventObject && currentEventObject.messageMetadata && currentEventObject.messageMetadata.messageId) {
+        msgId = currentEventObject.messageMetadata.messageId;
     } else {
-        console.error("buildAddOnCard: Could not determine messageId from event object: " + JSON.stringify(e));
-        return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Error"))
-          .addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Please open an email to process a catering order, or ensure one is selected if starting from a homepage."))).build();
+        const currentMessage = GmailApp.getCurrentMessage();
+        if (currentMessage) {
+            msgId = currentMessage.getId();
+            console.log("buildAddOnCard: Using current open message ID: " + msgId);
+        } else {
+            console.error("buildAddOnCard: Could not determine messageId. Event: " + JSON.stringify(e));
+            return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Error"))
+              .addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Please open or select a catering order email to process."))).build();
+        }
     }
   }
-  console.log("buildAddOnCard: Processing message ID: " + msgId);
-
+  console.log("Processing message ID: " + msgId);
 
   const message = GmailApp.getMessageById(msgId);
   const body = message.getPlainBody();
@@ -95,35 +129,28 @@ function buildAddOnCard(e) {
   const contactInfoParsed = _parseJson(callGemini(_buildContactInfoPrompt(body)));
   const itemsParsed = _parseJson(callGemini(_buildStructuredItemExtractionPrompt(body)));
 
-  const senderName = _extractNameFromEmail(senderEmail); // Name from sender's email
-  const extractedCustomerName = contactInfoParsed['Customer Name']; // Name potentially extracted by Gemini
-
-  // Order number generation
-  const timestampSuffix = Date.now().toString().slice(-5);
-  const randomPrefix = Math.floor(Math.random() * 900 + 100).toString();
-  const orderNum = (randomPrefix + timestampSuffix).slice(0,8).padStart(8,'0');
+  const senderNameFromEmail = _extractNameFromEmail(senderEmail);
+  const orderNum = Date.now().toString(); // Original V12 order number format
 
   const client = _matchClient(senderEmail);
   console.log("Matched Client: " + client);
 
   const data = {};
-  // Set Customer Name: Prioritize Gemini's extraction, then sender's name
-  data['Customer Name'] = extractedCustomerName || senderName;
-  data['Customer Address Email'] = _extractActualEmail(senderEmail); // Store only the pure email address
+  // Initialize with sender's name and email
+  data['Customer Name'] = senderNameFromEmail;
+  data['Customer Address Email'] = _extractActualEmail(senderEmail);
   data['Client'] = client;
   data['orderNum'] = orderNum;
   data['messageId'] = msgId;
   data['threadId'] = message.getThread().getId();
 
-  // Merge all other extracted contact info from Gemini.
-  // This might overwrite 'Customer Name' if Gemini found a different one in the body, which is fine.
-  // 'Contact Person', 'Contact Phone', 'Contact Email' will be added if Gemini found them.
+  // Merge Gemini's extracted contact info. This can overwrite 'Customer Name'
+  // and add 'Contact Person', 'Contact Phone', 'Contact Email' if found by Gemini.
   Object.assign(data, contactInfoParsed);
 
   data['Items Ordered'] = itemsParsed['Items Ordered'] || [];
 
   PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(data));
-  // Pass as an object that mimics the event structure for consistency
   return buildReviewContactCard({ parameters: { orderNum: orderNum } });
 }
 
@@ -142,14 +169,14 @@ function buildReviewContactCard(e) {
   const section = CardService.newCardSection();
   section.addWidget(CardService.newTextParagraph().setText('📋 Order #: <b>' + orderNum + '</b>'));
 
-  // Display 'Contact Person' if available, otherwise 'Customer Name'
+  // Field for 'Contact Person' - defaults to 'Customer Name' if 'Contact Person' isn't specifically extracted
   section.addWidget(CardService.newTextInput().setFieldName('Contact Person').setTitle('Contact Person').setValue(data['Contact Person'] || data['Customer Name'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 1').setTitle('Address Line 1').setValue(data['Customer Address Line 1'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address Line 2').setTitle('Address Line 2').setValue(data['Customer Address Line 2'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address City').setTitle('City').setValue(data['Customer Address City'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address State').setTitle('State').setValue(data['Customer Address State'] || ''));
   section.addWidget(CardService.newTextInput().setFieldName('Customer Address ZIP').setTitle('ZIP').setValue(data['Customer Address ZIP'] || ''));
-  // Display 'Contact Phone' if available, otherwise 'Customer Address Phone'
+  // Field for 'Contact Phone' - defaults to 'Customer Address Phone' if 'Contact Phone' isn't specifically extracted
   section.addWidget(CardService.newTextInput().setFieldName('Contact Phone').setTitle('Contact Phone').setValue(_formatPhone(data['Contact Phone'] || data['Customer Address Phone'] || '')));
   
   const deliveryDatePicker = CardService.newDatePicker().setFieldName("Delivery Date").setTitle("Delivery Date").setValueInMsSinceEpoch(_parseDateToMsEpoch(data['Delivery Date']));
@@ -177,7 +204,7 @@ function buildReviewContactCard(e) {
   }
 
   section.addWidget(CardService.newTextInput().setFieldName('Client').setTitle('Client (based on email domain)').setValue(data['Client'] || 'Unknown'));
-  // Display 'Contact Email' if available, otherwise 'Customer Address Email' (which is sender's email)
+  // Field for 'Contact Email' - defaults to 'Customer Address Email' (sender's email) if 'Contact Email' isn't specifically extracted
   section.addWidget(CardService.newTextInput().setFieldName('Contact Email').setTitle('Contact Email').setValue(data['Contact Email'] || data['Customer Address Email'] || ''));
 
   const action = CardService.newAction().setFunctionName('handleContactInfoSubmit').setParameters({ orderNum: orderNum });
