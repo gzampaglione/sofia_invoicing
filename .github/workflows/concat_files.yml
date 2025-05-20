@@ -1,0 +1,47 @@
+name: Concatenate GAS Files
+
+on:
+  push:
+    paths:
+      - '**/*.gs'
+      - '**/*.json'
+      - '.github/workflows/concat-files.yml'
+
+jobs:
+  concat:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Run concat script
+        run: |
+          python3 <<EOF
+          import os
+
+          ROOT_DIR = "."
+          OUTPUT_FILE = "combined_output.txt"
+          INCLUDE_EXTENSIONS = {".json", ".gs"}
+
+          with open(OUTPUT_FILE, "w", encoding="utf-8") as outfile:
+              for root, _, files in os.walk(ROOT_DIR):
+                  for filename in files:
+                      ext = os.path.splitext(filename)[1]
+                      if ext in INCLUDE_EXTENSIONS:
+                          filepath = os.path.join(root, filename)
+                          relative_path = os.path.relpath(filepath, ROOT_DIR)
+                          outfile.write(f"==== {relative_path}\n")
+                          with open(filepath, "r", encoding="utf-8") as infile:
+                              outfile.write(infile.read())
+                          outfile.write("\n\n")
+          EOF
+
+      - name: Upload combined output
+        uses: actions/upload-artifact@v4
+        with:
+          name: gas-files-output
+          path: combined_output.txt
