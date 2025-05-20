@@ -95,78 +95,85 @@ function _extractActualEmail(senderEmailField) {
 }
 
 /**
- * Parses a date string (preferring YYYY-MM-DD) into milliseconds since epoch.
- * Interprets date-only strings as midnight in the script's configured timezone.
- * Handles MM/DD/YYYY and YYYY-MM-DD. Defaults to current date if parsing fails.
- * When parsing MM/DD, it intelligently determines the year.
+ * Parses a date string (handling YYYY-MM-DD and MM/DD/YYYY primarily) into milliseconds since epoch.
+ * The goal is to represent midnight on the given date in the script's configured timezone ("America/New_York").
+ * Handles MM/DD for current/next year. Defaults to current date at midnight if parsing fails.
  * @param {string} dateString The date string to parse.
- * @returns {number} The date in milliseconds since epoch.
+ * @returns {number} The date in milliseconds since epoch, representing midnight in the script's timezone.
  */
 function _parseDateToMsEpoch(dateString) {
   if (!dateString || typeof dateString !== 'string' || dateString.trim() === "") {
-    return new Date().getTime(); // Default to now if no valid string
+    // Default to today at midnight in script's timezone
+    const today = new Date();
+    return new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
   }
-  dateString = dateString.trim();
-  let date;
-  const currentYear = new Date().getFullYear();
-  const now = new Date(); // For MM/DD logic
+  const trimmedDateString = dateString.trim();
+  let year, monthIndex, day;
 
-  // Preferred format: YYYY-MM-DD (interprets as local midnight)
-  if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
-    const parts = dateString.split('-');
-    // new Date(year, monthIndex, day) creates date at local midnight
-    date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-  }
-  // Format: MM/DD/YYYY (interprets as local midnight)
-  else if (dateString.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) {
-    const parts = dateString.split('/');
-    date = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
-  }
-  // Format: MM/DD (assumes current or next year)
-  else if (dateString.match(/^\d{1,2}\/\d{1,2}$/)) {
-    const parts = dateString.split('/');
-    const month = parseInt(parts[0]) - 1; // Months are 0-indexed
-    const day = parseInt(parts[1]);
-    date = new Date(currentYear, month, day);
-    // If the parsed date (current year) is in the past, assume it's for next year
-    const todayAtMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (date.getTime() < todayAtMidnight.getTime()) {
-      date.setFullYear(currentYear + 1);
-    }
-  }
-  // Other textual formats (e.g., "May 20", "May 20 2025") - JS Date parsing can be risky
-  else {
-    let parsedAttempt = new Date(dateString);
-    // If direct parsing results in an invalid date or a year far in the past (like 1970 for "May 20"),
-    // this indicates an issue or a date without a year. It's harder to reliably fix these
-    // without more context or a robust date parsing library.
-    // For now, if it results in a valid date object, we use it, but be wary of year assumptions.
-    if (!isNaN(parsedAttempt.getTime())) {
-        date = parsedAttempt;
-        // If year seems off (e.g., default JS year like 1970 for "May 20")
-        // and current dateString doesn't contain a year.
-        const hasYear = /\d{4}/.test(dateString) || /\d{2}[-\/]\d{2}[-\/]\d{2}/.test(dateString); // crude check
-        if (date.getFullYear() < 2000 && !hasYear ) {
-             date.setFullYear(currentYear);
-             const todayAtMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-             if (date.getTime() < todayAtMidnight.getTime()) {
-                 date.setFullYear(currentYear + 1);
-             }
-        }
-    }
-  }
-
-  if (date && !isNaN(date.getTime())) {
-    // Ensure the date is set to midnight in the script's timezone to avoid time component shifts
-    const scriptTimeZone = Session.getScriptTimeZone();
-    const formattedDateString = Utilities.formatDate(date, scriptTimeZone, "yyyy-MM-dd");
-    const parts = formattedDateString.split('-');
-    const finalDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
-    return finalDate.getTime();
+  // Try YYYY-MM-DD
+  let match = trimmedDateString.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    year = parseInt(match[1]);
+    monthIndex = parseInt(match[2]) - 1; // JS months are 0-indexed
+    day = parseInt(match[3]);
+    console.log(`_parseDateToMsEpoch: Parsed YYYY-MM-DD: ${year}-${monthIndex + 1}-${day} from "${trimmedDateString}"`);
   } else {
-    console.warn(`_parseDateToMsEpoch: Could not parse date string: "${dateString}". Defaulting to now.`);
-    return new Date().getTime(); // Default to now if all parsing fails
+    // Try MM/DD/YYYY
+    match = trimmedDateString.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (match) {
+      year = parseInt(match[3]);
+      monthIndex = parseInt(match[1]) - 1;
+      day = parseInt(match[2]);
+      console.log(`_parseDateToMsEpoch: Parsed MM/DD/YYYY: ${monthIndex + 1}/${day}/${year} from "${trimmedDateString}"`);
+    } else {
+      // Try MM/DD (assumes current or next year)
+      match = trimmedDateString.match(/^(\d{1,2})\/(\d{1,2})$/);
+      if (match) {
+        const currentJsDate = new Date();
+        year = currentJsDate.getFullYear();
+        monthIndex = parseInt(match[1]) - 1;
+        day = parseInt(match[2]);
+        
+        // Check if this date (in current year) has already passed
+        const tempDateThisYear = new Date(year, monthIndex, day);
+        const todayAtMidnight = new Date(currentJsDate.getFullYear(), currentJsDate.getMonth(), currentJsDate.getDate());
+        if (tempDateThisYear.getTime() < todayAtMidnight.getTime()) {
+          year++; // Assume next year
+        }
+        console.log(`_parseDateToMsEpoch: Parsed MM/DD: ${monthIndex + 1}/${day}, resolved to year ${year} from "${trimmedDateString}"`);
+      } else {
+        // Fallback for other textual formats (e.g., "May 20", "April 23, 2025")
+        // This can be risky due to JavaScript's Date parsing quirks.
+        let parsedAttempt = new Date(trimmedDateString);
+        if (!isNaN(parsedAttempt.getTime())) {
+          // Extract year, month, day from this potentially timezone-ambiguous parse
+          // To ensure we are setting it to local midnight of that *intended calendar day*
+          // It's safer to extract components if possible
+          year = parsedAttempt.getFullYear(); 
+          monthIndex = parsedAttempt.getMonth();
+          day = parsedAttempt.getDate();
+          console.log(`_parseDateToMsEpoch: Parsed textual date "${trimmedDateString}" to Y:${year}, M:${monthIndex}, D:${day}`);
+        } else {
+          console.warn(`_parseDateToMsEpoch: Could not parse date string: "${trimmedDateString}". Defaulting to today at midnight.`);
+          const today = new Date();
+          return new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+        }
+      }
+    }
   }
+
+  // Construct the date as midnight in the script's local timezone
+  // new Date(year, monthIndex, day) does exactly this.
+  const finalDate = new Date(year, monthIndex, day);
+  
+  if (isNaN(finalDate.getTime())) {
+      console.warn(`_parseDateToMsEpoch: Final constructed date is invalid for input "${trimmedDateString}". Defaulting.`);
+      const today = new Date();
+      return new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+  }
+  
+  console.log(`_parseDateToMsEpoch: Input "${trimmedDateString}", successfully parsed to local Date object: ${finalDate}, returning ms: ${finalDate.getTime()}`);
+  return finalDate.getTime();
 }
 
 

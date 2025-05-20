@@ -9,6 +9,14 @@
  * @param {string} body The plain text body of the email.
  * @returns {string} The formatted prompt.
  */
+// Prompts.gs
+
+/**
+ * Builds the Gemini prompt for extracting contact and order details from an email body.
+ * MODIFIED: Asks for Delivery Date in YYYY-MM-DD format.
+ * @param {string} body The plain text body of the email.
+ * @returns {string} The formatted prompt.
+ */
 function _buildContactInfoPrompt(body) {
   return 'I will present you with an email or email chain. The subject matter of the email is always the same: it is always a potential customer requesting a catering order to be delivered in the near future from a Philadelphia restaurant named El Merkury, which is owned by Sofia Deleon (also spelled de Leon). Your job is to assist the catering manager of El Merkury with automatically extracting and categorizing information from this email, and then to generate generate an invoice, a kitchen sheet, and a response back to the customer. \n So, lets start with the first step, of extracting information from the email. Please extract the following fields from that email and return ONLY a JSON object with no extra commentary:\n' +
          'Customer Name: (The primary person or organization placing the order for billing/invoice, usually the *individual\'s name* like "Ashley Duchi", not the institution like "University of Pennsylvania". This should NOT be related to elmerkury.com sender.)\n' +
@@ -19,10 +27,10 @@ function _buildContactInfoPrompt(body) {
          'Customer Address ZIP: (The ZIP code for DELIVERY. Default to 19103 unless otherwise specified.)\n' +
          'Customer Address Phone: (This is the primary phone number for the *customer placing the order*, typically found in their signature. Format: (XXX) XXX-XXXX if possible)\n' +
          'Customer Address Email: (This is the primary email for the *customer placing the order*, typically found in their signature.)\n' +
-         'Delivery Date: (Must be from the email body, not the email header. Extract it from the body, then format as YYYY-MM-DD)\n' +
+         'Delivery Date: (Must be from the email body, not the email header. Extract it from the body, then format as YYYY-MM-DD. For example, May 20th, 2025 should be 2025-05-20.)\n' +
          'Delivery Time: (Must be from the email body, not the email header. Extract it from the body, then format it as HH:MM AM/PM, e.g., "7:00 PM", "9:30 AM")\n' +
          'Include Utensils?: (If it is clearly specified in the body of the email that the customer wishes utensils to be included, then mark Yes. Otherwise, return Unknown)\n' +
-         'If yes: how many?: (If earlier it is clearly specified in the body of the email that the customer wishes utensils to be included, then note how many should be included. Otherwise, return 0 or an empty string.)\n' + // Modified to allow empty string for "how many"
+         'If yes: how many?: (If "Include Utensils?" is Yes, note how many should be included. If a number is not specified but utensils are requested, return "1" or a sensible default. If utensils are not requested or "Include Utensils?" is No/Unknown, return 0 or an empty string.)\n' +
          'Delivery Contact Person: (The specific person who will receive the delivery, if different from Customer Name, e.g., "Romina")\n' +
          'Delivery Contact Phone: (The specific phone number for the delivery contact, e.g., Romina\'s direct line)\n' +
          'The email to be analyzed:\n' + body + '\n\n If the email is a chain, please look through all the emails sent by the customer (e.g., the sender of the email did NOT have @elmerkury.com in their domain name). Start with the most recent email as the source of truth, and then work backwards if there are missing values. If there are two values within the email chain for the same field, use the value from the more recent email';
