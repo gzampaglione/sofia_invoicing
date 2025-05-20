@@ -1,4 +1,4 @@
-// Utils.gs
+// Utils.gs - V15
 // This file contains general utility functions that are not directly tied to the CardService UI flow
 // or specific Gmail actions, but are used across different parts of the add-on.
 
@@ -95,51 +95,80 @@ function _extractActualEmail(senderEmailField) {
 }
 
 /**
- * Parses a date string into milliseconds since epoch. Handles MM/DD/YYYY, Kalimantan-MM-DD, and MM/DD.
- * Defaults to current date if parsing fails. When parsing MM/DD, it intelligently determines the year.
+ * Parses a date string (preferring YYYY-MM-DD) into milliseconds since epoch.
+ * Interprets date-only strings as midnight in the script's configured timezone.
+ * Handles MM/DD/YYYY and YYYY-MM-DD. Defaults to current date if parsing fails.
+ * When parsing MM/DD, it intelligently determines the year.
  * @param {string} dateString The date string to parse.
  * @returns {number} The date in milliseconds since epoch.
  */
 function _parseDateToMsEpoch(dateString) {
-  if (!dateString || typeof dateString !== 'string') { return new Date().getTime(); }
-  let date; const currentYear = new Date().getFullYear();
-  const now = new Date();
+  if (!dateString || typeof dateString !== 'string' || dateString.trim() === "") {
+    return new Date().getTime(); // Default to now if no valid string
+  }
+  dateString = dateString.trim();
+  let date;
+  const currentYear = new Date().getFullYear();
+  const now = new Date(); // For MM/DD logic
 
-  // Handle common formats
-  if (dateString.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) { // MM/DD/YYYY
-    date = new Date(dateString);
-  } else if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) { //YYYY-MM-DD
-    date = new Date(dateString.replace(/-/g, '/'));
-  } else if (dateString.match(/^\d{1,2}\/\d{1,2}$/)) { // MM/DD
+  // Preferred format: YYYY-MM-DD (interprets as local midnight)
+  if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+    const parts = dateString.split('-');
+    // new Date(year, monthIndex, day) creates date at local midnight
+    date = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+  }
+  // Format: MM/DD/YYYY (interprets as local midnight)
+  else if (dateString.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) {
+    const parts = dateString.split('/');
+    date = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+  }
+  // Format: MM/DD (assumes current or next year)
+  else if (dateString.match(/^\d{1,2}\/\d{1,2}$/)) {
     const parts = dateString.split('/');
     const month = parseInt(parts[0]) - 1; // Months are 0-indexed
     const day = parseInt(parts[1]);
-    
     date = new Date(currentYear, month, day);
-
-    // If the parsed date is in the past, assume it's for next year
-    if (date.getTime() < now.getTime() && (month < now.getMonth() || (month === now.getMonth() && day < now.getDate()))) {
+    // If the parsed date (current year) is in the past, assume it's for next year
+    const todayAtMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    if (date.getTime() < todayAtMidnight.getTime()) {
       date.setFullYear(currentYear + 1);
     }
-  } else { // Try direct parsing for other formats (e.g., "May 20", "May 20 2025")
-    date = new Date(dateString);
-    // If direct parsing results in a year far in the past (e.g. 1970 for "May 20"),
-    // intelligently set to current or next year.
-    if (date && date.getFullYear() < 2000) {
-      date.setFullYear(currentYear);
-      // If setting to current year still makes it a past date (e.g., "May 20" parsed on May 21),
-      // and it's not a leap year issue or something, roll over to next year.
-      if (date.getTime() < now.getTime() && (date.getMonth() < now.getMonth() || (date.getMonth() === now.getMonth() && date.getDate() < now.getDate()))) {
-        date.setFullYear(currentYear + 1);
-      }
+  }
+  // Other textual formats (e.g., "May 20", "May 20 2025") - JS Date parsing can be risky
+  else {
+    let parsedAttempt = new Date(dateString);
+    // If direct parsing results in an invalid date or a year far in the past (like 1970 for "May 20"),
+    // this indicates an issue or a date without a year. It's harder to reliably fix these
+    // without more context or a robust date parsing library.
+    // For now, if it results in a valid date object, we use it, but be wary of year assumptions.
+    if (!isNaN(parsedAttempt.getTime())) {
+        date = parsedAttempt;
+        // If year seems off (e.g., default JS year like 1970 for "May 20")
+        // and current dateString doesn't contain a year.
+        const hasYear = /\d{4}/.test(dateString) || /\d{2}[-\/]\d{2}[-\/]\d{2}/.test(dateString); // crude check
+        if (date.getFullYear() < 2000 && !hasYear ) {
+             date.setFullYear(currentYear);
+             const todayAtMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+             if (date.getTime() < todayAtMidnight.getTime()) {
+                 date.setFullYear(currentYear + 1);
+             }
+        }
     }
   }
 
-  if (isNaN(date.getTime())) { // If still invalid
-    return new Date().getTime(); // Default to now
+  if (date && !isNaN(date.getTime())) {
+    // Ensure the date is set to midnight in the script's timezone to avoid time component shifts
+    const scriptTimeZone = Session.getScriptTimeZone();
+    const formattedDateString = Utilities.formatDate(date, scriptTimeZone, "yyyy-MM-dd");
+    const parts = formattedDateString.split('-');
+    const finalDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+    return finalDate.getTime();
+  } else {
+    console.warn(`_parseDateToMsEpoch: Could not parse date string: "${dateString}". Defaulting to now.`);
+    return new Date().getTime(); // Default to now if all parsing fails
   }
-  return date.getTime();
 }
+
 
 /**
  * Combines a date (in milliseconds since epoch) and a time string (e.g., "7:00 PM") into a single timestamp.
@@ -378,37 +407,55 @@ function getGeminiItemMatches(emailItems, masterQBItems) {
 
 /**
  * Populates a new kitchen sheet with order details and confirmed items.
+ * MODIFIED: Handles YYYY-MM-DD date format.
  * @param {string} orderNum The order number.
  * @returns {{id: string, url: string, name: string}} Object containing new sheet ID, URL, and Name.
  * @throws {Error} If order data or templates are not found, or population fails.
  */
 function populateKitchenSheet(orderNum) {
-  const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
-  if (!orderDataString) { console.error("KitchenSheet: Order data for " + orderNum + " not found."); throw new Error("Order data not found for kitchen sheet: " + orderNum); }
-  const orderData = JSON.parse(orderDataString); const confirmedItems = orderData['ConfirmedQBItems']; const masterAllItems = getMasterQBItems();
-  if (!confirmedItems || !Array.isArray(confirmedItems)) { console.error("KitchenSheet: Confirmed items not found for order " + orderNum); throw new Error("Confirmed items not found for kitchen sheet generation."); }
+  const userProps = PropertiesService.getUserProperties(); 
+  const orderDataString = userProps.getProperty(orderNum);
+  if (!orderDataString) { 
+    console.error("KitchenSheet: Order data for " + orderNum + " not found."); 
+    throw new Error("Order data not found for kitchen sheet: " + orderNum); 
+  }
+  const orderData = JSON.parse(orderDataString); 
+  const confirmedItems = orderData['ConfirmedQBItems']; 
+  const masterAllItems = getMasterQBItems();
+  if (!confirmedItems || !Array.isArray(confirmedItems)) { 
+    console.error("KitchenSheet: Confirmed items not found for order " + orderNum); 
+    throw new Error("Confirmed items not found for kitchen sheet generation."); 
+  }
   try {
-    const spreadsheet = SpreadsheetApp.openById(SHEET_ID); const templateSheet = spreadsheet.getSheetByName(KITCHEN_SHEET_TEMPLATE_NAME);
-    if (!templateSheet) { console.error("Kitchen sheet template '" + KITCHEN_SHEET_TEMPLATE_NAME + "' not found."); throw new Error("Kitchen sheet template not found."); }
-    const newSheetName = `Kitchen - ${orderNum} - ${orderData['Contact Person'] || orderData['Ordering Person Name'] || 'Unknown'}`.substring(0,100); 
+    const spreadsheet = SpreadsheetApp.openById(SHEET_ID); 
+    const templateSheet = spreadsheet.getSheetByName(KITCHEN_SHEET_TEMPLATE_NAME);
+    if (!templateSheet) { 
+      console.error("Kitchen sheet template '" + KITCHEN_SHEET_TEMPLATE_NAME + "' not found."); 
+      throw new Error("Kitchen sheet template not found."); 
+    }
+    const newSheetName = `Kitchen - ${orderNum} - ${orderData['Contact Person'] || orderData['Customer Name'] || 'Unknown'}`.substring(0,100); 
     const newSheet = templateSheet.copyTo(spreadsheet).setName(newSheetName);
     
-    const customerNameForKitchen = orderData['Contact Person'] || orderData['Customer Name'] || orderData['Ordering Person Name'] || ''; // Prioritize Contact Person
-    const contactPhoneForKitchen = _formatPhone(orderData['Contact Phone'] || orderData['Customer Address Phone'] || ''); // Prioritize Contact Phone from form
+    const customerNameForKitchen = orderData['Contact Person'] || orderData['Customer Name'] || '';
+    const contactPhoneForKitchen = _formatPhone(orderData['Contact Phone'] || orderData['Customer Address Phone'] || '');
     newSheet.getRange(KITCHEN_CUSTOMER_PHONE_CELL).setValue(`${customerNameForKitchen} - Ph: ${contactPhoneForKitchen}`);
     
-    let deliveryDateFormatted = orderData['Delivery Date'];
-    if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { 
-        deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy");
-    } else if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && deliveryDateFormatted.match(/^\d{4}-\d{2}-\d{2}/)) {
-        deliveryDateFormatted = Utilities.formatDate(new Date(deliveryDateFormatted.replace(/-/g, '/')), Session.getScriptTimeZone(), "MM/dd/yyyy");
-    }
-    newSheet.getRange(KITCHEN_DELIVERY_DATE_CELL).setValue(deliveryDateFormatted || '');
+    // MODIFICATION: Handle YYYY-MM-DD date format from orderData
+    let deliveryDateFormattedForSheet = orderData['Delivery Date'] || '';
+    if (deliveryDateFormattedForSheet && deliveryDateFormattedForSheet.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const parts = deliveryDateFormattedForSheet.split('-');
+        const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        deliveryDateFormattedForSheet = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "MM/dd/yyyy");
+    } // else, if it's already MM/DD/YYYY or other, use as is or add more parsing if needed.
+      // For now, assuming it will be YYYY-MM-DD from storage.
+
+    newSheet.getRange(KITCHEN_DELIVERY_DATE_CELL).setValue(deliveryDateFormattedForSheet);
     newSheet.getRange(KITCHEN_DELIVERY_TIME_CELL).setValue(orderData['Delivery Time'] || '');
     
     let currentRow = KITCHEN_ITEM_START_ROW;
     confirmedItems.forEach(item => {
-      const masterItem = masterAllItems.find(mi => mi.SKU === item.sku); const itemSize = masterItem ? (masterItem.Size || '') : '';
+      const masterItem = masterAllItems.find(mi => mi.SKU === item.sku); 
+      const itemSize = masterItem ? (masterItem.Size || '') : '';
       newSheet.getRange(KITCHEN_QTY_COL + currentRow).setValue(item.quantity);
       newSheet.getRange(KITCHEN_SIZE_COL + currentRow).setValue(itemSize);
       newSheet.getRange(KITCHEN_ITEM_NAME_COL + currentRow).setValue(item.quickbooks_item_name);
@@ -418,23 +465,39 @@ function populateKitchenSheet(orderNum) {
     });
     SpreadsheetApp.flush();
     return { id: newSheet.getSheetId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
-  } catch (e) { console.error("Error in populateKitchenSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to populate kitchen sheet: " + e.message); }
+  } catch (e) { 
+    console.error("Error in populateKitchenSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); 
+    throw new Error("Failed to populate kitchen sheet: " + e.message); 
+  }
 }
 
 /**
  * Populates a new invoice sheet with order details and confirmed items.
+ * MODIFIED: Handles YYYY-MM-DD date format.
  * @param {string} orderNum The order number.
  * @returns {{id: string, url: string, name: string}} Object containing new sheet ID, URL, and Name.
  * @throws {Error} If order data or templates are not found, or population fails.
  */
 function populateInvoiceSheet(orderNum) {
-  const userProps = PropertiesService.getUserProperties(); const orderDataString = userProps.getProperty(orderNum);
-  if (!orderDataString) { console.error("InvoiceSheet: Order data for " + orderNum + " not found."); throw new Error("Order data not found for " + orderNum); }
-  const orderData = JSON.parse(orderDataString); const confirmedItems = orderData['ConfirmedQBItems'];
-  if (!confirmedItems || !Array.isArray(confirmedItems)) { console.error("InvoiceSheet: Confirmed items not found for order " + orderNum); throw new Error("Confirmed items not found for invoice generation."); }
+  const userProps = PropertiesService.getUserProperties(); 
+  const orderDataString = userProps.getProperty(orderNum);
+  if (!orderDataString) { 
+    console.error("InvoiceSheet: Order data for " + orderNum + " not found."); 
+    throw new Error("Order data not found for " + orderNum); 
+  }
+  const orderData = JSON.parse(orderDataString); 
+  const confirmedItems = orderData['ConfirmedQBItems'];
+  if (!confirmedItems || !Array.isArray(confirmedItems)) { 
+    console.error("InvoiceSheet: Confirmed items not found for order " + orderNum); 
+    throw new Error("Confirmed items not found for invoice generation."); 
+  }
   try {
-    const spreadsheet = SpreadsheetApp.openById(SHEET_ID); const templateSheet = spreadsheet.getSheetByName(INVOICE_TEMPLATE_SHEET_NAME);
-    if (!templateSheet) { console.error("Invoice template sheet '" + INVOICE_TEMPLATE_SHEET_NAME + "' not found."); throw new Error("Invoice template sheet not found."); }
+    const spreadsheet = SpreadsheetApp.openById(SHEET_ID); 
+    const templateSheet = spreadsheet.getSheetByName(INVOICE_TEMPLATE_SHEET_NAME);
+    if (!templateSheet) { 
+      console.error("Invoice template sheet '" + INVOICE_TEMPLATE_SHEET_NAME + "' not found."); 
+      throw new Error("Invoice template sheet not found."); 
+    }
     const newSheetName = `Invoice - ${orderNum} - ${orderData['Customer Name'] || 'Unknown'}`.substring(0,100); 
     const newSheet = templateSheet.copyTo(spreadsheet).setName(newSheetName);
     
@@ -446,13 +509,15 @@ function populateInvoiceSheet(orderNum) {
     const cityStateZip = `${orderData['Customer Address City'] || ''}${orderData['Customer Address City'] && (orderData['Customer Address State'] || orderData['Customer Address ZIP']) ? ', ' : ''}${orderData['Customer Address State'] || ''} ${orderData['Customer Address ZIP'] || ''}`.trim();
     newSheet.getRange(CITY_STATE_ZIP_CELL).setValue(cityStateZip);
     
-    let deliveryDateFormatted = orderData['Delivery Date'];
-    if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && !deliveryDateFormatted.includes('/')) { 
-        deliveryDateFormatted = Utilities.formatDate(new Date(parseInt(deliveryDateFormatted)), Session.getScriptTimeZone(), "MM/dd/yyyy");
-    } else if (deliveryDateFormatted && typeof deliveryDateFormatted === 'string' && deliveryDateFormatted.match(/^\d{4}-\d{2}-\d{2}/)) {
-        deliveryDateFormatted = Utilities.formatDate(new Date(deliveryDateFormatted.replace(/-/g, '/')), Session.getScriptTimeZone(), "MM/dd/yyyy");
-    }
-    newSheet.getRange(DELIVERY_DATE_CELL_INVOICE).setValue(deliveryDateFormatted || '');
+    // MODIFICATION: Handle YYYY-MM-DD date format from orderData
+    let deliveryDateFormattedForSheet = orderData['Delivery Date'] || '';
+    if (deliveryDateFormattedForSheet && deliveryDateFormattedForSheet.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const parts = deliveryDateFormattedForSheet.split('-');
+        const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+        deliveryDateFormattedForSheet = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "MM/dd/yyyy");
+    } // else, if it's already MM/DD/YYYY or other, use as is.
+
+    newSheet.getRange(DELIVERY_DATE_CELL_INVOICE).setValue(deliveryDateFormattedForSheet);
     newSheet.getRange(DELIVERY_TIME_CELL_INVOICE).setValue(orderData['Delivery Time'] || '');
     
     let currentRow = ITEM_START_ROW_INVOICE;
@@ -467,7 +532,6 @@ function populateInvoiceSheet(orderNum) {
       grandTotal += lineTotal; currentRow++;
     });
 
-    // Add Tip and Other Charges to Invoice Sheet
     let tipAmount = orderData['TipAmount'] || 0;
     let otherChargesAmount = orderData['OtherChargesAmount'] || 0;
     let otherChargesDescription = orderData['OtherChargesDescription'] || "Other Charges";
@@ -475,17 +539,14 @@ function populateInvoiceSheet(orderNum) {
     if (tipAmount > 0) {
         newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue("Tip").setWrap(false);
         newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(tipAmount).setNumberFormat("$#,##0.00");
-        grandTotal += tipAmount;
-        currentRow++;
+        grandTotal += tipAmount; currentRow++;
     }
     if (otherChargesAmount > 0) {
         newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(otherChargesDescription).setWrap(false);
         newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(otherChargesAmount).setNumberFormat("$#,##0.00");
-        grandTotal += otherChargesAmount;
-        currentRow++;
+        grandTotal += otherChargesAmount; currentRow++;
     }
     
-    // Delivery Fee
     let deliveryFee = BASE_DELIVERY_FEE;
     if (orderData['master_delivery_time_ms']) {
         const deliveryHour = new Date(orderData['master_delivery_time_ms']).getHours();
@@ -495,18 +556,15 @@ function populateInvoiceSheet(orderNum) {
     }
     newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue("Delivery Fee").setWrap(false);
     newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(deliveryFee).setNumberFormat("$#,##0.00");
-    grandTotal += deliveryFee;
-    currentRow++;
+    grandTotal += deliveryFee; currentRow++;
 
-    // Utensil Costs
     if (orderData['Include Utensils?'] === 'Yes') {
         const numUtensils = parseInt(orderData['If yes: how many?']) || 0;
         if (numUtensils > 0) {
             const utensilTotalCost = numUtensils * COST_PER_UTENSIL_SET;
             newSheet.getRange(ITEM_DESCRIPTION_COL_INVOICE + currentRow).setValue(`Utensils (${numUtensils} sets)`).setWrap(false);
             newSheet.getRange(ITEM_TOTAL_PRICE_COL_INVOICE + currentRow).setValue(utensilTotalCost).setNumberFormat("$#,##0.00");
-            grandTotal += utensilTotalCost;
-            currentRow++;
+            grandTotal += utensilTotalCost; currentRow++;
         }
     }
 
@@ -518,7 +576,10 @@ function populateInvoiceSheet(orderNum) {
     
     SpreadsheetApp.flush();
     return { id: newSheet.getSheetId(), url: newSheet.getParent().getUrl() + '#gid=' + newSheet.getSheetId(), name: newSheetName };
-  } catch (e) { console.error("Error in populateInvoiceSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); throw new Error("Failed to populate invoice sheet: " + e.message); }
+  } catch (e) { 
+    console.error("Error in populateInvoiceSheet for order " + orderNum + ": " + e.toString() + (e.stack ? ("\nStack: " + e.stack) : "")); 
+    throw new Error("Failed to populate invoice sheet: " + e.message); 
+  }
 }
 
 /**
@@ -651,13 +712,11 @@ function generatePdfFromSheet(sheetForPdf, pdfSheetName, orderDataForEmail, spre
 
     let pdfBlob;
     try {
-        // Construct the PDF export URL
-        // Common PDF export parameters are included; adjust as needed for your layout.
         const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export` +
                              `?format=pdf` +
                              `&gid=${sheetGid}` +
-                             `&scale=4` + // 1=Normal, 2=Fit to Width, 3=Fit to Height, 4=Fit to Page
-                             `&top_margin=0.50` +  // Inches
+                             `&scale=4` + 
+                             `&top_margin=0.50` +  
                              `&bottom_margin=0.50` +
                              `&left_margin=0.50` +
                              `&right_margin=0.50` +
@@ -665,26 +724,25 @@ function generatePdfFromSheet(sheetForPdf, pdfSheetName, orderDataForEmail, spre
                              `&vertical_alignment=TOP` +
                              `&gridlines=false` + 
                              `&printnotes=false` + 
-                             `&pageorder=1` + // 1=down_then_over, 2=over_then_down
-                             `&sheetnames=false` + // Do not print sheet names
-                             `&printtitle=false` + // Do not print spreadsheet title
-                             `&attachment=true` +  // Crucial for getting the file content
-                             `&portrait=true` +    // Page orientation
-                             // `&fitw=true` +     // Fit to width (can conflict with scale, use one or the other usually)
-                             `&size=letter`;       // Paper size (letter, A4, etc.)
+                             `&pageorder=1` + 
+                             `&sheetnames=false` + 
+                             `&printtitle=false` + 
+                             `&attachment=true` +  
+                             `&portrait=true` +    
+                             `&size=letter`;       
 
         console.log(`generatePdfFromSheet: Constructed PDF Export URL (first 150 chars, excludes token): ${pdfExportUrl.substring(0,150)}...`);
         
         const response = UrlFetchApp.fetch(pdfExportUrl, {
             headers: {
-                'Authorization': `Bearer ${ScriptApp.getOAuthToken()}` // Necessary for accessing the export URL
+                'Authorization': `Bearer ${ScriptApp.getOAuthToken()}` 
             },
-            muteHttpExceptions: true // To get error response content instead of throwing an immediate exception
+            muteHttpExceptions: true 
         });
 
         const responseCode = response.getResponseCode();
         if (responseCode === 200) {
-            pdfBlob = response.getBlob().setName(`${pdfSheetName}.pdf`); // Use the passed pdfSheetName
+            pdfBlob = response.getBlob().setName(`${pdfSheetName}.pdf`); 
             console.log(`generatePdfFromSheet: PDF blob created via UrlFetch: ${pdfBlob.getName()}, Size: ${pdfBlob.getBytes().length} bytes.`);
         } else {
             const errorContent = response.getContentText();
@@ -695,9 +753,6 @@ function generatePdfFromSheet(sheetForPdf, pdfSheetName, orderDataForEmail, spre
         console.error(`generatePdfFromSheet: Exception during UrlFetch PDF export for order ${orderNum}, sheet "${pdfSheetName}": ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`);
         throw new Error(`Failed to generate PDF via UrlFetch for sheet "${pdfSheetName}": ${e.message}`);
     }
-
-    // --- Email Drafting Part ---
-    // (This part remains the same as your last working version or my previous suggestion for it)
     const threadId = orderDataForEmail.threadId;
     if (!threadId) { 
       console.error(`generatePdfFromSheet: Thread ID missing for order ${orderNum}`);
@@ -714,27 +769,34 @@ function generatePdfFromSheet(sheetForPdf, pdfSheetName, orderDataForEmail, spre
     const recipient = orderDataForEmail['Contact Email'] || orderDataForEmail['Customer Address Email'] || orderDataForEmail['Internal Sender Email'] || messageToReplyTo.getFrom();
     const subject = `Catering Order Confirmed & Invoice - El Merkury - Order #${orderNum}`;
     
+    // MODIFICATION: Date formatting for email, ensuring YYYY-MM-DD is parsed correctly
     let deliveryDateForEmail = "Not specified";
-    if (orderDataForEmail['Delivery Date']) {
+    if (orderDataForEmail['Delivery Date']) { // Expecting YYYY-MM-DD format from orderData
         try {
-            let dateParts = orderDataForEmail['Delivery Date'].split(/[-\/]/);
-            let year, month, day;
-            if (dateParts.length === 3) {
-                if (dateParts[0].length === 4) { 
-                    year = parseInt(dateParts[0]); month = parseInt(dateParts[1]) - 1; day = parseInt(dateParts[2]);
-                } else { 
-                    year = parseInt(dateParts[2]); month = parseInt(dateParts[0]) - 1; day = parseInt(dateParts[1]);
-                }
-                const tempDate = new Date(year, month, day);
-                deliveryDateForEmail = Utilities.formatDate(tempDate, Session.getScriptTimeZone(), "EEEE, MMMM d, yyyy");
-            } else { 
-                deliveryDateForEmail = orderDataForEmail['Delivery Date']; 
+            const dateStr = orderDataForEmail['Delivery Date'];
+            let tempDate;
+            if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) { // YYYY-MM-DD
+                const parts = dateStr.split('-');
+                // new Date(year, monthIndex, day) for local midnight
+                tempDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+            } else if (dateStr.match(/^\d{1,2}\/\d{1,2}\/\d{4}$/)) { // MM/DD/YYYY fallback
+                const parts = dateStr.split('/');
+                tempDate = new Date(parseInt(parts[2]), parseInt(parts[0]) - 1, parseInt(parts[1]));
+            } else { // Fallback for other unparsed or already formatted strings
+                 tempDate = new Date(_parseDateToMsEpoch(dateStr)); // Use full parse if not YYYY-MM-DD
+            }
+            if (!isNaN(tempDate.getTime())) {
+                 deliveryDateForEmail = Utilities.formatDate(tempDate, Session.getScriptTimeZone(), "EEEE, MMMM d, yyyy");
+            } else {
+                 deliveryDateForEmail = orderDataForEmail['Delivery Date']; // Use raw if parsing failed
             }
         } catch (dateParseErr) {
             console.warn(`generatePdfFromSheet: Error parsing deliveryDateForEmail for order ${orderNum}: "${orderDataForEmail['Delivery Date']}". Error: ${dateParseErr}. Using raw value.`);
             deliveryDateForEmail = orderDataForEmail['Delivery Date']; 
         }
     }
+    // END MODIFICATION for date formatting
+
     const deliveryTimeForEmail = orderDataForEmail['Delivery Time'] ? _normalizeTimeFormat(orderDataForEmail['Delivery Time']) : "Not specified";
 
     const body = `Dear ${orderDataForEmail['Contact Person'] || orderDataForEmail['Customer Name'] || 'Valued Customer'},\n\nThank you for your El Merkury catering order!\n\nPlease find attached the invoice (#${orderNum}) for your order.\n\nDelivery is scheduled for ${deliveryDateForEmail} around ${deliveryTimeForEmail}.\n\nWe look forward to serving you!\n\nBest regards,\nSofia & The El Merkury Team`;

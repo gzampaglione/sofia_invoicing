@@ -318,7 +318,7 @@ function handleContactInfoSubmitWithValidation(e) {
 /**
  * Processes the submitted contact information and moves to the item mapping stage.
  * This function is typically called by `handleContactInfoSubmitWithValidation` after validation passes.
- * MODIFIED: Added detailed logging for delivery date/time updates.
+ * MODIFIED: Saves Delivery Date as YYYY-MM-DD. Includes detailed logging for date/time.
  * @param {GoogleAppsScript.Addons.EventObject} e The event object from the form submission.
  * @returns {GoogleAppsScript.Card_Service.ActionResponse} An action response to navigate to the next card.
  */
@@ -327,11 +327,10 @@ function handleContactInfoSubmit(e) {
   const orderNum = e.parameters.orderNum;
   console.log(`handleContactInfoSubmit: Processing orderNum: ${orderNum}`);
   
-  const newData = {}; // Holds values from the current form submission
+  const newData = {}; 
   let deliveryDateMsFromForm = null;
   let deliveryTimeStrFromForm = '';
 
-  // Retrieve existing data to see what's being overwritten
   const userProps = PropertiesService.getUserProperties();
   const existingRaw = userProps.getProperty(orderNum);
   if (!existingRaw) { 
@@ -341,19 +340,18 @@ function handleContactInfoSubmit(e) {
   const existing = JSON.parse(existingRaw);
   console.log(`handleContactInfoSubmit (Order: ${orderNum}): Existing - Delivery Date: "${existing['Delivery Date']}", Time: "${existing['Delivery Time']}", MasterMS: ${existing['master_delivery_time_ms']}`);
 
-  // Populate newData from all form inputs
   for (const key in inputs) {
     if (key === "Delivery Date") { 
-      deliveryDateMsFromForm = _getFormInputValue(inputs, key, true); // This is the new date in MS from picker
+      deliveryDateMsFromForm = _getFormInputValue(inputs, key, true); 
       if (deliveryDateMsFromForm) {
-        newData[key] = Utilities.formatDate(new Date(deliveryDateMsFromForm), Session.getScriptTimeZone(), "MM/dd/yyyy");
+        // MODIFICATION: Save date as YYYY-MM-DD
+        newData[key] = Utilities.formatDate(new Date(deliveryDateMsFromForm), Session.getScriptTimeZone(), "yyyy-MM-dd");
       } else {
-        // If date is cleared from form (validation should prevent submission if required)
         newData[key] = ""; 
         console.warn(`handleContactInfoSubmit (Order: ${orderNum}): Delivery Date from form is null/empty.`);
       }
     } else if (key === "Delivery Time") {
-      deliveryTimeStrFromForm = _getFormInputValue(inputs, key); // This is the new time string from dropdown
+      deliveryTimeStrFromForm = _getFormInputValue(inputs, key); 
       newData[key] = deliveryTimeStrFromForm;
     } else { 
       newData[key] = _getFormInputValue(inputs, key); 
@@ -362,43 +360,26 @@ function handleContactInfoSubmit(e) {
   console.log(`handleContactInfoSubmit (Order: ${orderNum}): Values from Form (newData) - Delivery Date: "${newData['Delivery Date']}", Delivery Time: "${newData['Delivery Time']}"`);
   console.log(`handleContactInfoSubmit (Order: ${orderNum}): Raw form values - deliveryDateMsFromForm: ${deliveryDateMsFromForm}, deliveryTimeStrFromForm: "${deliveryTimeStrFromForm}"`);
 
-  // Merge new (edited) data with existing data, prioritizing newData for overlapping keys
   const merged = { ...existing, ...newData };
 
-  // Recalculate master_delivery_time_ms using the specific values just retrieved from the form
-  // These (deliveryDateMsFromForm, deliveryTimeStrFromForm) are the most up-to-date values.
   if (deliveryDateMsFromForm && deliveryTimeStrFromForm && deliveryTimeStrFromForm.trim() !== "") {
     merged['master_delivery_time_ms'] = _combineDateAndTime(deliveryDateMsFromForm, deliveryTimeStrFromForm);
     console.log(`handleContactInfoSubmit (Order: ${orderNum}): Successfully recalculated master_delivery_time_ms using form inputs: ${merged['master_delivery_time_ms']}`);
   } else {
-    // This case should ideally be prevented by handleContactInfoSubmitWithValidation
-    console.warn(`handleContactInfoSubmit (Order: ${orderNum}): Could not recalculate master_delivery_time_ms because date or time from form is missing/empty. ` +
-                 `deliveryDateMsFromForm: ${deliveryDateMsFromForm}, deliveryTimeStrFromForm: "${deliveryTimeStrFromForm}". ` +
-                 `Master time may be stale or incorrect if date/time was cleared without validation.`);
-    // Decide on a strategy: clear master_delivery_time_ms, or leave it (it would be the old value from 'existing')
-    // For now, if it can't be recalculated from fresh form inputs, it will retain the old value from 'existing'
-    // due to the initial spread '...existing'. Or, if one was changed and the other was not submitted
-    // in `inputs`, then `newData` would lack that key, and `existing` would provide it for the merge.
-    // The critical part is that if BOTH date and time are present from the form, `master_delivery_time_ms` IS updated.
-    // If only one is changed, the other is still present in `inputs` (as it was pre-filled on the card).
-    // So, deliveryDateMsFromForm and deliveryTimeStrFromForm should always represent the full current state of the form.
-    // The only way they'd be empty is if the user cleared them, which validation catches.
+    console.warn(`handleContactInfoSubmit (Order: ${orderNum}): Could not recalculate master_delivery_time_ms. DateMs: ${deliveryDateMsFromForm}, TimeStr: "${deliveryTimeStrFromForm}".`);
  }
   console.log(`handleContactInfoSubmit (Order: ${orderNum}): Merged Data - Delivery Date: "${merged['Delivery Date']}", Time: "${merged['Delivery Time']}", MasterMS: ${merged['master_delivery_time_ms']}`);
 
-
-  // Re-run item extraction if not already present or if it's in a bad format (safety net)
   if (!merged['Items Ordered'] || !Array.isArray(merged['Items Ordered']) || (merged['Items Ordered'].length > 0 && typeof merged['Items Ordered'][0].description === 'undefined')) {
-    console.log(`handleContactInfoSubmit (Order: ${orderNum}): Re-running item extraction as Items Ordered was missing or malformed.`);
+    console.log(`handleContactInfoSubmit (Order: ${orderNum}): Re-running item extraction.`);
     const message = GmailApp.getMessageById(merged.messageId);
     const body = message.getPlainBody();
     const itemsParsed = _parseJson(callGemini(_buildStructuredItemExtractionPrompt(body)));
     merged['Items Ordered'] = itemsParsed['Items Ordered'] || [];
   }
 
-  // Save the updated data
   PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(merged));
-  console.log(`handleContactInfoSubmit (Order: ${orderNum}): Data saved to UserProperties. Proceeding to buildItemMappingAndPricingCard.`);
+  console.log(`handleContactInfoSubmit (Order: ${orderNum}): Data saved. Proceeding to item mapping.`);
   
   const itemMappingCard = buildItemMappingAndPricingCard({ parameters: { orderNum: orderNum } });
   return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(itemMappingCard)).build();
@@ -407,8 +388,7 @@ function handleContactInfoSubmit(e) {
 // === ITEM MAPPING AND PRICING CARD ===
 /**
  * Builds the card for mapping extracted email items to QuickBooks items and reviewing pricing.
- * MODIFIED: Implements new flavor selection UI with dropdowns for AI-identified flavors
- * that match standard flavors. Renames fields and removes "Selected SKU" line.
+ * MODIFIED: Uses DecoratedText with a Switch for "Remove item".
  * @param {GoogleAppsScript.Addons.EventObject} e The event object containing the order number.
  * @returns {GoogleAppsScript.Card_Service.Card} The constructed item mapping card.
  */
@@ -434,9 +414,8 @@ function buildItemMappingAndPricingCard(e) {
 
   const suggestedMatches = getGeminiItemMatches(emailItems, masterQBItems);
   
-  // Store suggestedMatches in orderData for handleItemMappingSubmit to access identified_flavors
   orderData['tempSuggestedMatches'] = suggestedMatches; 
-  PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(orderData)); // Save immediately
+  PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(orderData));
 
   const card = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle(`Step 2: Map Items for Order ${orderNum}`));
   const headerSection = CardService.newCardSection();
@@ -475,13 +454,9 @@ function buildItemMappingAndPricingCard(e) {
         if (fallbackInList) { qbItemDropdown.addItem(`${fallbackInList.Name} (SKU: ${fallbackInList.SKU})`, fallbackInList.SKU, true); }
       }
       itemsDisplaySection.addWidget(qbItemDropdown);
-      // MODIFICATION: Removed "Selected SKU: ..." line
-      // itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`Selected SKU: ${masterMatchDetails ? masterMatchDetails.SKU : 'N/A'}`));
 
-      // MODIFICATION: Renamed header for customer's flavor text
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Customer Flavors (from email):</b><br><font color="#555555"><i>${item.parsed_flavors_or_details || "None specified"}</i></font>`));
       
-      // --- New Flavor UI ---
       const aiIdentifiedFlavors = item.identified_flavors || [];
       let customNotesFromUnmatchedAIFlavors = [];
       let displayedFlavorDropdownCount = 0;
@@ -491,24 +466,20 @@ function buildItemMappingAndPricingCard(e) {
           masterMatchDetails['Flavor 1'], masterMatchDetails['Flavor 2'],
           masterMatchDetails['Flavor 3'], masterMatchDetails['Flavor 4'],
           masterMatchDetails['Flavor 5']
-        ].filter(Boolean).map(f => f.toString().trim()); // Ensure flavors are strings and trimmed
+        ].filter(Boolean).map(f => f.toString().trim());
 
         if (itemStandardFlavorsArray.length > 0) {
-          aiIdentifiedFlavors.forEach((aiFlavor, aiFlavorIndex) => { // aiFlavorIndex tracks original AI identified flavor position
+          aiIdentifiedFlavors.forEach((aiFlavor, aiFlavorIndex) => { 
             const matchedStdFlavor = _findBestStandardFlavorMatch(aiFlavor, itemStandardFlavorsArray);
-            
             if (matchedStdFlavor) {
               displayedFlavorDropdownCount++;
               const flavorDropdown = CardService.newSelectionInput()
-                // Use aiFlavorIndex to ensure field name corresponds to the original AI identified flavor slot
                 .setFieldName(`item_${index}_requested_flavor_dropdown_${aiFlavorIndex}`) 
                 .setTitle(`Flavor Choice ${displayedFlavorDropdownCount} (Matched: "${aiFlavor}")`);
-              
               if (typeof flavorDropdown.setType === 'function') {
                 flavorDropdown.setType(CardService.SelectionInputType.DROPDOWN);
               } else { console.warn(`setType missing for flavor dropdown ${index}-${aiFlavorIndex}`); }
-
-              flavorDropdown.addItem("-- Select a Standard Flavor --", "", !matchedStdFlavor); // Default empty option
+              flavorDropdown.addItem("-- Select a Standard Flavor --", "", !matchedStdFlavor); 
               itemStandardFlavorsArray.forEach(stdOpt => {
                 flavorDropdown.addItem(stdOpt, stdOpt, stdOpt === matchedStdFlavor);
               });
@@ -524,43 +495,27 @@ function buildItemMappingAndPricingCard(e) {
         customNotesFromUnmatchedAIFlavors = customNotesFromUnmatchedAIFlavors.concat(aiIdentifiedFlavors);
       }
       
-      // MODIFICATION: Renamed "Other/Custom Flavors & Notes" to "Customer Notes"
       itemsDisplaySection.addWidget(CardService.newTextInput()
         .setFieldName(`item_${index}_custom_notes`)
         .setTitle("Customer Notes (additional flavors/requests)") 
         .setValue(customNotesFromUnmatchedAIFlavors.join(', '))
         .setMultiline(true));
-      // --- End New Flavor UI ---
 
       const initialPrice = masterMatchDetails ? (masterMatchDetails.Price !== undefined ? masterMatchDetails.Price : 0) : 0;
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Unit Price:</b> $${initialPrice.toFixed(2)}`));
       
-      const removeItemSelectionInput = CardService.newSelectionInput()
+      // MODIFICATION: Using DecoratedText with a Switch for "Remove this item?"
+      const removeItemSwitch = CardService.newSwitch()
         .setFieldName(`item_remove_${index}`)
-        .setTitle("Remove this item?");
-      try { 
-        if (removeItemSelectionInput && typeof removeItemSelectionInput.setType === 'function') {
-          if (CardService && CardService.SelectionInputType && CardService.SelectionInputType.CHECKBOX) {
-            removeItemSelectionInput.setType(CardService.SelectionInputType.CHECKBOX);
-          } else { 
-            console.warn(`CardService.SelectionInputType.CHECKBOX not found for item_remove_${index}, using DROPDOWN.`);
-            if (CardService && CardService.SelectionInputType && CardService.SelectionInputType.DROPDOWN) {
-              removeItemSelectionInput.setType(CardService.SelectionInputType.DROPDOWN);
-            }
-          }
-        } else { 
-          console.warn(`setType method missing on removeItemSelectionInput for item_remove_${index}.`);
-        }
-      } catch (e_setType) { 
-        console.error(`Error setting type for 'Remove item' widget (item_remove_${index}): ${e_setType.toString()}. Trying DROPDOWN.`);
-        try {
-           if (removeItemSelectionInput && typeof removeItemSelectionInput.setType === 'function' && CardService && CardService.SelectionInputType && CardService.SelectionInputType.DROPDOWN) {
-            removeItemSelectionInput.setType(CardService.SelectionInputType.DROPDOWN);
-          }
-        } catch (e_fallback) {console.error(`Error setting DROPDOWN fallback for item_remove_${index}: ${e_fallback.toString()}`);}
-      }
-      removeItemSelectionInput.addItem("Yes, remove", "true", false);
-      itemsDisplaySection.addWidget(removeItemSelectionInput);
+        .setValue("true") // Value when ON
+        .setControlType(CardService.SwitchControlType.SWITCH)
+        .setSelected(false); // Default to OFF
+
+      const removeItemDecoratedText = CardService.newDecoratedText()
+        .setText("Remove this item?") // This is the label
+        .setSwitchControl(removeItemSwitch);
+      itemsDisplaySection.addWidget(removeItemDecoratedText);
+      // END MODIFICATION for remove item switch
       
       itemsDisplaySection.addWidget(CardService.newDivider());
     }); 
@@ -583,7 +538,7 @@ function buildItemMappingAndPricingCard(e) {
   manualAddSection.addWidget(CardService.newTextParagraph().setText("Unit Price will be based on selected SKU."));
   card.addSection(manualAddSection);
 
-  const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges (Optional)").setCollapsible(true);
+  const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges (Optional)");
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue((orderData['TipAmount'] || 0).toFixed(2)));
   if (orderData['PreliminarySubtotalForTip'] !== undefined && orderData['TipAmount'] !== undefined) {
     const prelimSubtotal = parseFloat(orderData['PreliminarySubtotalForTip']);
@@ -601,7 +556,6 @@ function buildItemMappingAndPricingCard(e) {
     .setParameters({ 
         orderNum: orderNum, 
         ai_item_count: suggestedMatches.length.toString()
-        // No longer need to pass identified_flavor_counts, will use orderData.tempSuggestedMatches
     });
   card.setFixedFooter(CardService.newFixedFooter().setPrimaryButton(CardService.newTextButton().setText('Confirm All Items & Proceed').setOnClickAction(action).setTextButtonStyle(CardService.TextButtonStyle.FILLED)));
   return card.build();
@@ -609,7 +563,7 @@ function buildItemMappingAndPricingCard(e) {
 
 /**
  * Handles the submission of item mapping and pricing, calculates final totals.
- * MODIFIED: Ensures manually added item's name is prioritized in summary.
+ * MODIFIED: Reads "remove item" from Switch; processes new flavor UI.
  * @param {GoogleAppsScript.Addons.EventObject} e The event object from the form submission.
  * @returns {GoogleAppsScript.Card_Service.ActionResponse} An action response to navigate to the next card.
  */
@@ -633,14 +587,21 @@ function handleItemMappingSubmit(e) {
   const suggestedMatchesFromStorage = orderData['tempSuggestedMatches'] || [];
 
   for (let i = 0; i < aiItemCount; i++) { 
-    const removeThisItem = formInputs[`item_remove_${i}`] && formInputs[`item_remove_${i}`][0] === "true";
-    if (removeThisItem) { console.log(`Item ${i} (AI) marked for removal.`); continue; }
+    // MODIFICATION: Reading value from a Switch.
+    // A Switch that is "on" and has a value="true" will submit that value.
+    // If it's "off", the fieldName might be absent or have a different value depending on how unselected state is handled.
+    // If .setValue("true") is used, when ON, formInputs[`item_remove_${i}`] = ["true"]. If OFF, it might be absent.
+    const removeSwitchFieldName = `item_remove_${i}`;
+    const removeThisItem = (formInputs[removeSwitchFieldName] && formInputs[removeSwitchFieldName][0] === "true");
+    // END MODIFICATION for remove item switch
+
+    if (removeThisItem) { console.log(`Item ${i} (AI) marked for removal via switch.`); continue; }
 
     const qtyString = formInputs[`item_qty_${i}`] && formInputs[`item_qty_${i}`][0];
     const qbItemSKU = formInputs[`item_qb_sku_${i}`] && formInputs[`item_qb_sku_${i}`][0]; 
     
     const currentProcessedItem = suggestedMatchesFromStorage[i] || {}; 
-    const originalDescription = currentProcessedItem.original_email_description || "N/A"; // This is from original email parse
+    const originalDescription = currentProcessedItem.original_email_description || "N/A";
     const aiIdentifiedFlavorsForItem = currentProcessedItem.identified_flavors || [];
 
     let finalKitchenNotesParts = [];
@@ -648,6 +609,8 @@ function handleItemMappingSubmit(e) {
 
     aiIdentifiedFlavorsForItem.forEach((originalAiFlavor, aiFlavorIndex) => {
       const dropdownFieldName = `item_${i}_requested_flavor_dropdown_${aiFlavorIndex}`;
+      // Check if the dropdown was actually rendered (i.e., AI flavor was matched to standard)
+      // and if a value was selected from it.
       if (formInputs[dropdownFieldName] && formInputs[dropdownFieldName][0] && formInputs[dropdownFieldName][0] !== "") {
         selectedDropdownFlavorValues.push(formInputs[dropdownFieldName][0]);
       }
@@ -694,7 +657,6 @@ function handleItemMappingSubmit(e) {
           quantity: parseInt(qtyString) || 1, 
           unit_price: unitPrice, 
           kitchen_notes_and_flavors: kitchenNotesAndFlavors, 
-            // For AI matched items, original_email_description from Gemini match is good
           original_email_description: originalDescription 
       });
     }
@@ -709,13 +671,11 @@ function handleItemMappingSubmit(e) {
       const newItemKitchenNotes = (formInputs.new_item_kitchen_notes && formInputs.new_item_kitchen_notes[0]) || "";
       confirmedQuickBooksItems.push({ 
           quickbooks_item_id: newItemQbSKU, 
-          quickbooks_item_name: manMasterItemDetails.Name, // This is the actual QB Item Name
+          quickbooks_item_name: manMasterItemDetails.Name, 
           sku: manMasterItemDetails.SKU, 
           quantity: parseInt(newItemQtyString) || 1, 
           unit_price: unitPrice, 
           kitchen_notes_and_flavors: newItemKitchenNotes, 
-            // MODIFICATION: Set original_email_description to null for manually added items
-            // This ensures item.quickbooks_item_name is used as the primary display in the summary.
           original_email_description: null 
       });
     }
@@ -737,7 +697,7 @@ function handleItemMappingSubmit(e) {
 /**
  * Builds the final review and actions card before document generation.
  * Summarizes order details, confirmed items, and charges.
- * MODIFIED: Added logging for delivery date/time being displayed.
+ * MODIFIED: Handles YYYY-MM-DD date format for display.
  * @param {GoogleAppsScript.Addons.EventObject} e The event object.
  * @returns {GoogleAppsScript.Card_Service.Card} The constructed card.
  */
@@ -754,33 +714,45 @@ function buildInvoiceActionsCard(e) {
     console.log(`buildInvoiceActionsCard (Order: ${orderNum}): Read from props - Delivery Date: "${orderData['Delivery Date']}", Time: "${orderData['Delivery Time']}", MasterMS: ${orderData['master_delivery_time_ms']}`);
 
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Name (for Invoice):</b> " + (orderData['Customer Name'] || 'N/A') + "</i>"));
-    // ... (other customer details) ...
-    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Client:</b> " + (orderData['Client'] || 'N/A') + "</i>")); 
-    
-    // Format and display delivery date/time
-    let deliveryDateForDisplay = orderData['Delivery Date'] || 'N/A';
-    if (orderData['Delivery Date'] && orderData['Delivery Date'] !== 'N/A') {
-        // Assuming orderData['Delivery Date'] is "MM/DD/YYYY"
-        try {
-            deliveryDateForDisplay = Utilities.formatDate(new Date(orderData['Delivery Date']), Session.getScriptTimeZone(), "MM/dd/yyyy"); // Keep it simple or format as desired
-        } catch (dateErr) {
-            console.warn(`buildInvoiceActionsCard: Could not re-format Delivery Date "${orderData['Delivery Date']}" from orderData. Error: ${dateErr}`);
-            deliveryDateForDisplay = orderData['Delivery Date']; // Use as is if formatting fails
-        }
-    }
-    const deliveryTimeForDisplay = orderData['Delivery Time'] || 'N/A';
-    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery:</b> " + deliveryDateForDisplay + " at " + deliveryTimeForDisplay + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Phone:</b> " + _formatPhone(orderData['Customer Address Phone'] || 'N/A') + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Customer Email:</b> " + (orderData['Customer Address Email'] || 'N/A') + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Contact:</b> " + (orderData['Contact Person'] || 'N/A') + "</i>"));
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery Phone:</b> " + _formatPhone(orderData['Contact Phone'] || 'N/A') + "</i>"));
 
+    let address = "<i><b>Address:</b> ";
+    if (orderData['Customer Address Line 1']) address += orderData['Customer Address Line 1'];
+    if (orderData['Customer Address Line 2']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address Line 2'];
+    if (orderData['Customer Address City']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address City'];
+    if (orderData['Customer Address State']) address += (address === "<i><b>Address:</b> " ? "" : ", ") + orderData['Customer Address State'];
+    if (orderData['Customer Address ZIP']) address += " " + orderData['Customer Address ZIP'];
+    address += "</i>";
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText(address.length <= "<i><b>Address:</b> </i>".length + 1 ? "<i><b>Address:</b> N/A</i>" : address));
+    
+    // MODIFICATION: Handle YYYY-MM-DD date format from orderData for display
+    let deliveryDateForDisplay = orderData['Delivery Date'] || 'N/A';
+    if (deliveryDateForDisplay && deliveryDateForDisplay.match(/^\d{4}-\d{2}-\d{2}$/)) {
+        const parts = deliveryDateForDisplay.split('-');
+        // new Date(year, monthIndex, day) for local midnight
+        const dateObj = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2])); 
+        deliveryDateForDisplay = Utilities.formatDate(dateObj, Session.getScriptTimeZone(), "MM/dd/yyyy");
+    } else if (deliveryDateForDisplay && deliveryDateForDisplay.includes('/')) {
+        // It might already be in MM/DD/YYYY from an older record or if AI didn't give YYYY-MM-DD
+        // No change needed if already in display format or if it's "N/A"
+    }
+    const deliveryTimeForDisplay = orderData['Delivery Time'] ? _normalizeTimeFormat(orderData['Delivery Time']) : 'N/A';
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Delivery:</b> " + deliveryDateForDisplay + " at " + deliveryTimeForDisplay + "</i>"));
+    // END MODIFICATION
+
+    orderDetailsSection.addWidget(CardService.newTextParagraph().setText("<i><b>Client:</b> " + (orderData['Client'] || 'N/A') + "</i>")); 
   } else { 
     orderDetailsSection.addWidget(CardService.newTextParagraph().setText("Could not retrieve order details.")); 
   }
   card.addSection(orderDetailsSection);
 
-  // ... (itemSummarySection remains the same as previously provided with "Flavor/Custom Notes" and divider) ...
   const itemSummarySection = CardService.newCardSection().setHeader("Confirmed Items Summary");
   let subTotalForCharges = 0; 
   if (orderDataString) {
-    const orderData = JSON.parse(orderDataString); // Re-parse for safety, or use the one from above
+    const orderData = JSON.parse(orderDataString);
     const confirmedItems = orderData['ConfirmedQBItems'];
     if (confirmedItems && Array.isArray(confirmedItems) && confirmedItems.length > 0) {
       confirmedItems.forEach(item => {
@@ -807,7 +779,7 @@ function buildInvoiceActionsCard(e) {
     }
     
     let deliveryFee = BASE_DELIVERY_FEE;
-    if (orderData['master_delivery_time_ms']) { // Fee calculation uses master_delivery_time_ms
+    if (orderData['master_delivery_time_ms']) { 
         const deliveryHour = new Date(orderData['master_delivery_time_ms']).getHours();
         console.log(`buildInvoiceActionsCard (Order: ${orderNum}): Delivery hour for fee calc: ${deliveryHour} from master_ms: ${orderData['master_delivery_time_ms']}`);
         if (deliveryHour >= DELIVERY_FEE_CUTOFF_HOUR) {
@@ -839,7 +811,6 @@ function buildInvoiceActionsCard(e) {
   }
   card.addSection(itemSummarySection);
 
-  // ... (actionsSection remains the same as previously provided with "Review/Edit Customer Details" button) ...
   const actionsSection = CardService.newCardSection();
   const generateDocsAndEmailAction = CardService.newAction().setFunctionName('handleGenerateInvoiceAndEmail').setParameters({ orderNum: orderNum });
   actionsSection.addWidget(CardService.newTextButton().setText("📄厨️ Generate Documents & Prepare Email").setOnClickAction(generateDocsAndEmailAction).setTextButtonStyle(CardService.TextButtonStyle.FILLED));
