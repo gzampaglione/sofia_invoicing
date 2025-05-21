@@ -46,7 +46,7 @@ Once you provide us with the PO number, we will issue an updated, official invoi
 Your current order details:
 Delivery Date: \${deliveryDateFormatted}
 Time: \${deliveryTimeFormatted}
-Address:
+Address: 
 \${deliveryAddressLine1}
 \${deliveryAddressLine2OrEmpty}\${deliveryCityStateZip}
 
