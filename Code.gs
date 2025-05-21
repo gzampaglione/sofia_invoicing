@@ -35,12 +35,13 @@ function handlePennInvoiceWorkflowPlaceholder(e) {
   return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().updateCard(card)).build();
 }
 
-// === ENTRY POINT - STEP 0: INITIAL EMAIL PARSING ===
+// === ENTRY POINT for Catering Email Workflow (can be called from homepage or directly) ===
 /**
  * Builds the initial add-on card by parsing the current Gmail message.
- * Extracts data using Gemini and sets up the order.
- * @param {GoogleAppsScript.Addons.EventObject} e The event object.
- * @returns {GoogleAppsScript.Card_Service.Card} The review contact card (Step 1).
+ * Extracts contact information, items, and performs preliminary calculations using Gemini API.
+ * MODIFIED: Tip amount is now based on AI extraction from email, not a default percentage.
+ * @param {GoogleAppsScript.Addons.EventObject} e The event object from Gmail.
+ * @returns {GoogleAppsScript.Card_Service.Card} The review contact card.
  */
 function buildAddOnCard(e) {
   console.log("buildAddOnCard triggered. Event: " + JSON.stringify(e));
@@ -70,7 +71,7 @@ function buildAddOnCard(e) {
   const message = GmailApp.getMessageById(msgId);
   const body = message.getPlainBody();
   const senderEmailFull = message.getFrom();
-  console.log("buildAddOnCard: Sender of current message (message.getFrom()):", senderEmailFull);
+  console.log("buildAddOnCard: Email sender of current message (message.getFrom()):", senderEmailFull);
 
   const contactInfoParsed = _parseJson(callGemini(_buildContactInfoPrompt(body)));
   const itemsParsed = _parseJson(callGemini(_buildStructuredItemExtractionPrompt(body)));
@@ -104,27 +105,61 @@ function buildAddOnCard(e) {
   data['Customer Address City'] = contactInfoParsed['Customer Address City'] || '';
   data['Customer Address State'] = contactInfoParsed['Customer Address State'] || '';
   data['Customer Address ZIP'] = contactInfoParsed['Customer Address ZIP'] || '';
-  data['Delivery Date'] = contactInfoParsed['Delivery Date'] || ''; // Expecting YYYY-MM-DD from AI
+  data['Delivery Date'] = contactInfoParsed['Delivery Date'] || ''; 
   data['Delivery Time'] = contactInfoParsed['Delivery Time'] || ''; 
   data['Include Utensils?'] = contactInfoParsed['Include Utensils?'] || 'Unknown';
   data['If yes: how many?'] = contactInfoParsed['If yes: how many?'] || (contactInfoParsed['Include Utensils?'] === 'Yes' ? '0' : '');
-
 
   data['Client'] = client; 
   data['orderNum'] = orderNum;
   data['messageId'] = msgId;
   data['threadId'] = message.getThread().getId();
-  Object.assign(data, contactInfoParsed); // Merge any other fields AI found
+  Object.assign(data, contactInfoParsed); // Merge any other fields AI found, including 'Explicit Tip Mentioned'
   data['Items Ordered'] = itemsParsed['Items Ordered'] || [];
 
-  let preliminarySubtotal = 0;
-  data['Items Ordered'].forEach(item => {
-    const priceMatch = item.description.match(/\$(\d+(\.\d{2})?)/);
-    preliminarySubtotal += (parseInt(item.quantity) || 1) * (priceMatch ? parseFloat(priceMatch[1]) : 0);
-  });
-  data['PreliminarySubtotalForTip'] = preliminarySubtotal; 
-  data['TipAmount'] = (preliminarySubtotal * 0.10); // Default 10% tip suggestion
-  console.log(`Initial parse for order ${orderNum}: Tip base subtotal $${preliminarySubtotal.toFixed(2)}, Tip $${data['TipAmount'].toFixed(2)}`);
+  // MODIFICATION: Tip processing based on AI extraction
+  let tipAmount = 0;
+  let preliminarySubtotalForTipCalc = 0; // Only calculate if needed for percentage tip
+  const aiTipMention = contactInfoParsed['Explicit Tip Mentioned'] || "0";
+  data['AIExtractedTipMention'] = aiTipMention; // Store what AI found for potential display/explanation
+
+  console.log(`buildAddOnCard (Order ${orderNum}): AI extracted tip mention: "${aiTipMention}"`);
+
+  if (aiTipMention && aiTipMention !== "0" && aiTipMention.trim() !== "") {
+    if (aiTipMention.includes('%')) {
+      // Calculate preliminary subtotal (only if a percentage tip is mentioned)
+      data['Items Ordered'].forEach(item => {
+        const priceMatch = item.description.match(/\$(\d+(\.\d{2})?)/);
+        preliminarySubtotalForTipCalc += (parseInt(item.quantity) || 1) * (priceMatch ? parseFloat(priceMatch[1]) : 0);
+      });
+      data['PreliminarySubtotalForTip'] = preliminarySubtotalForTipCalc; // Store if calculated
+
+      const percentage = parseFloat(aiTipMention.replace('%', '').trim());
+      if (!isNaN(percentage) && preliminarySubtotalForTipCalc > 0) {
+        tipAmount = (percentage / 100) * preliminarySubtotalForTipCalc;
+        console.log(`buildAddOnCard (Order ${orderNum}): Calculated ${percentage}% tip on subtotal $${preliminarySubtotalForTipCalc.toFixed(2)} = $${tipAmount.toFixed(2)}`);
+      } else if (!isNaN(percentage)) {
+        // Store the percentage itself if subtotal is zero, user can adjust amount later
+        console.log(`buildAddOnCard (Order ${orderNum}): AI found ${percentage}% tip, but subtotal is $0. User will need to enter amount.`);
+        // data['AIPercentageTip'] = percentage; // Optionally store this
+        tipAmount = 0; // Default to 0 if subtotal is 0
+      } else {
+        console.warn(`buildAddOnCard (Order ${orderNum}): Could not parse percentage from AI tip mention: "${aiTipMention}"`);
+      }
+    } else { // Assumed to be a dollar amount
+      const dollarAmount = parseFloat(aiTipMention.replace('$', '').trim());
+      if (!isNaN(dollarAmount)) {
+        tipAmount = dollarAmount;
+        console.log(`buildAddOnCard (Order ${orderNum}): AI extracted fixed tip amount: $${tipAmount.toFixed(2)}`);
+      } else {
+        console.warn(`buildAddOnCard (Order ${orderNum}): Could not parse dollar amount from AI tip mention: "${aiTipMention}"`);
+      }
+    }
+  }
+  data['TipAmount'] = parseFloat(tipAmount.toFixed(2)); // Ensure it's a number with 2 decimal places
+  // END MODIFICATION for Tip processing
+
+  console.log(`buildAddOnCard (Order ${orderNum}): Final TipAmount set to: $${data['TipAmount'].toFixed(2)}`);
 
   PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(data));
   return buildReviewContactCard({ parameters: { orderNum: orderNum } });
@@ -330,8 +365,7 @@ function handleContactInfoSubmit(e) {
 // === ITEM MAPPING AND PRICING CARD ===
 /**
  * Builds the card for mapping extracted email items to QuickBooks items and reviewing pricing.
- * MODIFIED: "Customer Notes" field pre-filled with item.parsed_flavors_or_details.
- * Uses Switch for "Remove item", "Additional Charges" section expanded.
+ * MODIFIED: Tip explanation adjusted based on AI-extracted tip.
  * @param {GoogleAppsScript.Addons.EventObject} e The event object containing the order number.
  * @returns {GoogleAppsScript.Card_Service.Card} The constructed item mapping card.
  */
@@ -340,51 +374,42 @@ function buildItemMappingAndPricingCard(e) {
   const userProps = PropertiesService.getUserProperties();
   const orderDataString = userProps.getProperty(orderNum);
   if (!orderDataString) { 
-    console.error("Error in buildItemMappingAndPricingCard: Order data for " + orderNum + " not found.");
-    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Order data not found for item mapping. Please restart."))).build();
+    console.error("buildItemMappingAndPricingCard: Order data for " + orderNum + " not found.");
+    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Order data not found."))).build();
   }
   const orderData = JSON.parse(orderDataString);
   const emailItems = orderData['Items Ordered']; 
   if (!emailItems || !Array.isArray(emailItems) || (emailItems.length > 0 && (typeof emailItems[0] !== 'object' || typeof emailItems[0].description === 'undefined'))) { 
-    console.error("Error: 'Items Ordered' for " + orderNum + " is missing or not in expected format: " + JSON.stringify(emailItems));
-    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Item Loading Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Could not load items for matching. Please try reopening."))).build();
+    console.error("buildItemMappingAndPricingCard: 'Items Ordered' invalid for " + orderNum);
+    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Item Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Could not load items."))).build();
   }
   const masterQBItems = getMasterQBItems();
   if (masterQBItems.length === 0) { 
-    console.error("Error: Master item list ('Item Lookup' sheet) is empty or could not be loaded.");
-    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Configuration Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Master item list ('Item Lookup') could not be loaded. Check config."))).build();
+    console.error("buildItemMappingAndPricingCard: Master item list empty.");
+    return CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("Config Error")).addSection(CardService.newCardSection().addWidget(CardService.newTextParagraph().setText("Master item list not loaded."))).build();
   }
 
   const suggestedMatches = getGeminiItemMatches(emailItems, masterQBItems);
-  
   orderData['tempSuggestedMatches'] = suggestedMatches; 
   PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(orderData));
 
   const card = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle(`Step 2: Map Items for Order ${orderNum}`));
   const headerSection = CardService.newCardSection();
-  if (suggestedMatches.length > 0) {
-    headerSection.addWidget(CardService.newTextParagraph().setText(`AI detected ${suggestedMatches.length} potential item(s) from the email.`));
-  } else {
-    headerSection.addWidget(CardService.newTextParagraph().setText("No items were automatically extracted by AI. Please add items manually."));
-  }
+  headerSection.addWidget(CardService.newTextParagraph().setText(suggestedMatches.length > 0 ? `AI detected ${suggestedMatches.length} item(s).` : "No items auto-extracted. Add manually."));
   card.addSection(headerSection);
 
   const itemsDisplaySection = CardService.newCardSection();
-
   if (suggestedMatches.length > 0) {
     suggestedMatches.forEach((item, index) => {
       const masterMatchDetails = masterQBItems.find(master => master.SKU === item.matched_qb_item_id) || 
                                masterQBItems.find(master => master.SKU === FALLBACK_CUSTOM_ITEM_SKU);
-      
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Email Line ${index + 1}:</b> "${item.original_email_description}"`));
       itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_qty_${index}`).setTitle('Unit Quantity').setValue(item.extracted_main_quantity || '1'));
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`AI Match Confidence: ${item.match_confidence || 'N/A'}`));
       
       const qbItemDropdown = CardService.newSelectionInput().setFieldName(`item_qb_sku_${index}`).setTitle('QuickBooks Item');
-      if (qbItemDropdown && typeof qbItemDropdown.setType === 'function') {
-        qbItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); 
-      } else { console.warn(`setType method missing on qbItemDropdown for item ${index}.`); }
-      
+      if (qbItemDropdown && typeof qbItemDropdown.setType === 'function') { qbItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); } 
+      else { console.warn(`setType missing on qbItemDropdown for item ${index}.`); }
       let preSelected = false;
       masterQBItems.forEach(masterItem => {
         if (!masterItem.SKU) return;
@@ -401,69 +426,39 @@ function buildItemMappingAndPricingCard(e) {
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Customer Flavors (from email):</b><br><font color="#555555"><i>${item.parsed_flavors_or_details || "None specified"}</i></font>`));
       
       const aiIdentifiedFlavors = item.identified_flavors || [];
-      let customNotesFromUnmatchedAIFlavors = []; // This is the correct variable name declared here
+      let customNotesFromUnmatchedAIFlavors = []; 
       let displayedFlavorDropdownCount = 0;
 
       if (masterMatchDetails && masterMatchDetails.SKU !== FALLBACK_CUSTOM_ITEM_SKU) {
-        const itemStandardFlavorsArray = [
-          masterMatchDetails['Flavor 1'], masterMatchDetails['Flavor 2'],
-          masterMatchDetails['Flavor 3'], masterMatchDetails['Flavor 4'],
-          masterMatchDetails['Flavor 5']
-        ].filter(Boolean).map(f => f.toString().trim());
-
+        const itemStandardFlavorsArray = [masterMatchDetails['Flavor 1'], masterMatchDetails['Flavor 2'], masterMatchDetails['Flavor 3'], masterMatchDetails['Flavor 4'], masterMatchDetails['Flavor 5']].filter(Boolean).map(f => f.toString().trim());
         if (itemStandardFlavorsArray.length > 0) {
           aiIdentifiedFlavors.forEach((aiFlavor, aiFlavorIndex) => { 
             const matchedStdFlavor = _findBestStandardFlavorMatch(aiFlavor, itemStandardFlavorsArray);
             if (matchedStdFlavor) {
               displayedFlavorDropdownCount++;
-              const flavorDropdown = CardService.newSelectionInput()
-                .setFieldName(`item_${index}_requested_flavor_dropdown_${aiFlavorIndex}`) 
-                .setTitle(`Flavor Choice ${displayedFlavorDropdownCount} (AI found: "${aiFlavor}")`);
-              if (typeof flavorDropdown.setType === 'function') {
-                flavorDropdown.setType(CardService.SelectionInputType.DROPDOWN);
-              } else { console.warn(`setType missing for flavor dropdown ${index}-${aiFlavorIndex}`); }
+              const flavorDropdown = CardService.newSelectionInput().setFieldName(`item_${index}_requested_flavor_dropdown_${aiFlavorIndex}`).setTitle(`Flavor Choice ${displayedFlavorDropdownCount} (AI found: "${aiFlavor}")`);
+              if (typeof flavorDropdown.setType === 'function') { flavorDropdown.setType(CardService.SelectionInputType.DROPDOWN); } 
+              else { console.warn(`setType missing for flavor dropdown ${index}-${aiFlavorIndex}`); }
               flavorDropdown.addItem("-- Select a Standard Flavor --", "", !matchedStdFlavor); 
-              itemStandardFlavorsArray.forEach(stdOpt => {
-                flavorDropdown.addItem(stdOpt, stdOpt, stdOpt === matchedStdFlavor);
-              });
+              itemStandardFlavorsArray.forEach(stdOpt => { flavorDropdown.addItem(stdOpt, stdOpt, stdOpt === matchedStdFlavor); });
               itemsDisplaySection.addWidget(flavorDropdown);
-            } else {
-              customNotesFromUnmatchedAIFlavors.push(aiFlavor); 
-            }
+            } else { customNotesFromUnmatchedAIFlavors.push(aiFlavor); }
           });
-        } else { 
-          customNotesFromUnmatchedAIFlavors = customNotesFromUnmatchedAIFlavors.concat(aiIdentifiedFlavors);
-        }
-      } else { 
-        customNotesFromUnmatchedAIFlavors = customNotesFromUnmatchedAIFlavors.concat(aiIdentifiedFlavors);
-      }
+        } else { customNotesFromUnmatchedAIFlavors = customNotesFromUnmatchedAIFlavors.concat(aiIdentifiedFlavors); }
+      } else { customNotesFromUnmatchedAIFlavors = customNotesFromUnmatchedAIFlavors.concat(aiIdentifiedFlavors); }
       
       let customerNotesValue = item.parsed_flavors_or_details || '';
-      // FIX: Use the correctly declared variable name 'customNotesFromUnmatchedAIFlavors'
-      if (!customerNotesValue && customNotesFromUnmatchedAIFlavors.length > 0) { // Line 413 was here
+      if (!customerNotesValue && customNotesFromUnmatchedAIFlavors.length > 0) {
           customerNotesValue = "Unmatched AI Flavors: " + customNotesFromUnmatchedAIFlavors.join(', ');
       }
-
-      itemsDisplaySection.addWidget(CardService.newTextInput()
-        .setFieldName(`item_${index}_custom_notes`)
-        .setTitle("Customer Notes (original details / additional requests)")
-        .setValue(customerNotesValue) 
-        .setMultiline(true));
+      itemsDisplaySection.addWidget(CardService.newTextInput().setFieldName(`item_${index}_custom_notes`).setTitle("Customer Notes (original details / additional requests)").setValue(customerNotesValue).setMultiline(true));
 
       const initialPrice = masterMatchDetails ? (masterMatchDetails.Price !== undefined ? masterMatchDetails.Price : 0) : 0;
       itemsDisplaySection.addWidget(CardService.newTextParagraph().setText(`<b>Unit Price:</b> $${initialPrice.toFixed(2)}`));
       
-      const removeItemSwitch = CardService.newSwitch()
-        .setFieldName(`item_remove_${index}`)
-        .setValue("true") 
-        .setControlType(CardService.SwitchControlType.SWITCH)
-        .setSelected(false); 
-
-      const removeItemDecoratedText = CardService.newDecoratedText()
-        .setText("Remove this item?") 
-        .setSwitchControl(removeItemSwitch);
+      const removeItemSwitch = CardService.newSwitch().setFieldName(`item_remove_${index}`).setValue("true").setControlType(CardService.SwitchControlType.SWITCH).setSelected(false); 
+      const removeItemDecoratedText = CardService.newDecoratedText().setText("Remove this item?").setSwitchControl(removeItemSwitch);
       itemsDisplaySection.addWidget(removeItemDecoratedText);
-      
       itemsDisplaySection.addWidget(CardService.newDivider());
     }); 
   } 
@@ -471,9 +466,8 @@ function buildItemMappingAndPricingCard(e) {
 
   const manualAddSection = CardService.newCardSection().setHeader("Manually Add New Item").setCollapsible(true);
   const newItemDropdown = CardService.newSelectionInput().setFieldName("new_item_qb_sku").setTitle("Select Item");
-  if (newItemDropdown && typeof newItemDropdown.setType === 'function') { 
-    newItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); 
-  } else { console.warn("setType method missing on newItemDropdown."); }
+  if (newItemDropdown && typeof newItemDropdown.setType === 'function') { newItemDropdown.setType(CardService.SelectionInputType.DROPDOWN); } 
+  else { console.warn("setType method missing on newItemDropdown."); }
   newItemDropdown.addItem("--- Select Item to Add ---", "", true);
   masterQBItems.forEach(masterItem => {
     if (!masterItem.SKU) return;
@@ -486,25 +480,34 @@ function buildItemMappingAndPricingCard(e) {
   card.addSection(manualAddSection);
 
   const additionalChargesSection = CardService.newCardSection().setHeader("Additional Charges"); 
-  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue((orderData['TipAmount'] || 0).toFixed(2)));
-  const initialTipAmount = parseFloat(orderData['TipAmount'] || 0);
-  if (initialTipAmount > 0 && orderData['PreliminarySubtotalForTip'] !== undefined) {
-    const prelimSubtotal = parseFloat(orderData['PreliminarySubtotalForTip']);
-    if (!isNaN(prelimSubtotal)) { 
-        additionalChargesSection.addWidget(CardService.newTextParagraph()
-            .setText(`<font color="#555555" size="1"><i>(Initial 10% tip suggestion of $${initialTipAmount.toFixed(2)} was based on an email-parsed subtotal of $${prelimSubtotal.toFixed(2)}. You can adjust.)</i></font>`));
+  const currentTipAmount = parseFloat(orderData['TipAmount'] || 0);
+  additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("tip_amount").setTitle("Tip Amount ($)").setValue(currentTipAmount.toFixed(2)));
+  
+  // MODIFICATION: Conditional tip explanation
+  const aiExtractedTipMention = orderData['AIExtractedTipMention'];
+  if (aiExtractedTipMention && aiExtractedTipMention !== "0" && aiExtractedTipMention.trim() !== "") {
+    let tipExplanation = `(AI detected tip mention: "${aiExtractedTipMention}". `;
+    if (aiExtractedTipMention.includes('%') && orderData['PreliminarySubtotalForTip'] !== undefined) {
+        const prelimSubtotal = parseFloat(orderData['PreliminarySubtotalForTip']);
+        tipExplanation += `Calculated as $${currentTipAmount.toFixed(2)} based on subtotal $${prelimSubtotal.toFixed(2)}. `;
+    } else {
+        tipExplanation += `Applied as $${currentTipAmount.toFixed(2)}. `;
     }
+    tipExplanation += "You can adjust.)";
+    additionalChargesSection.addWidget(CardService.newTextParagraph()
+        .setText(`<font color="#555555" size="1"><i>${tipExplanation}</i></font>`));
+  } else if (currentTipAmount === 0) {
+    // Optionally, add a note if no tip was found and it's zero, e.g.:
+    // additionalChargesSection.addWidget(CardService.newTextParagraph().setText("<font color='#555555' size='1'><i>(No tip specified in email. Add if desired.)</i></font>"));
   }
+  // END MODIFICATION
+
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_amount").setTitle("Other Charges Amount ($)").setValue("0.00"));
   additionalChargesSection.addWidget(CardService.newTextInput().setFieldName("other_charges_description").setTitle("Other Charges Description"));
   card.addSection(additionalChargesSection);
 
-  const action = CardService.newAction().setFunctionName('handleItemMappingSubmit')
-    .setParameters({ 
-        orderNum: orderNum, 
-        ai_item_count: suggestedMatches.length.toString()
-    });
-  card.setFixedFooter(CardService.newFixedFooter().setPrimaryButton(CardService.newTextButton().setText('Confirm All Items & Proceed').setOnClickAction(action).setTextButtonStyle(CardService.TextButtonStyle.FILLED)));
+  const action = CardService.newAction().setFunctionName('handleItemMappingSubmit').setParameters({ orderNum: orderNum, ai_item_count: suggestedMatches.length.toString() });
+  card.setFixedFooter(CardService.newFixedFooter().setPrimaryButton(CardService.newTextButton().setText('Confirm Items & Proceed to Review').setOnClickAction(action).setTextButtonStyle(CardService.TextButtonStyle.FILLED)));
   return card.build();
 }
 
@@ -757,11 +760,11 @@ function handleFinalizeSheets(e) {
 // === STEP 4 CARD: PDF & EMAIL OPTIONS ===
 /**
  * Builds the card displayed after sheets are generated.
- * Offers options to open generated sheets, view PDF (if generated), and compose email from templates.
+ * Offers options to open generated sheets, view HTML invoice (web app), and compose email from templates.
  * @param {GoogleAppsScript.Addons.EventObject} e Event object containing orderNum.
  * @return {GoogleAppsScript.Card_Service.Card} The PDF and Email options card.
  */
-function buildPdfAndEmailOptionsCard(e) { // Renamed from buildSuccessCardWithTemplates for clarity
+function buildPdfAndEmailOptionsCard(e) { 
   const orderNum = e.parameters.orderNum;
   console.log(`buildPdfAndEmailOptionsCard: Building for orderNum ${orderNum}`);
 
@@ -777,7 +780,6 @@ function buildPdfAndEmailOptionsCard(e) { // Renamed from buildSuccessCardWithTe
 
   const card = CardService.newCardBuilder().setHeader(CardService.newCardHeader().setTitle("✅ Sheets Finalized! Order: " + orderNum));
   
-  // Section for links to generated sheets
   const generatedDocsSection = CardService.newCardSection().setHeader("View Generated Sheets");
   if (orderData.invoiceSheetName && orderData.invoiceSheetUrl) {
     generatedDocsSection.addWidget(CardService.newTextParagraph().setText(`Invoice Sheet: "<b>${orderData.invoiceSheetName}</b>"`));
@@ -795,30 +797,41 @@ function buildPdfAndEmailOptionsCard(e) { // Renamed from buildSuccessCardWithTe
   }
   card.addSection(generatedDocsSection);
 
-  // Section for PDF and Email actions
   const pdfEmailSection = CardService.newCardSection().setHeader("Generate PDF & Compose Email");
   
-  // Display link to PDF if it was already generated and saved in a previous step (e.g., user clicked button twice)
+  // --- Link to view HTML Invoice (Web App) ---
+  // IMPORTANT: This uses your Script ID.
+  const devWebAppBaseUrl = "https://script.google.com/macros/s/1pMJckgQKNhCN01sf-BWR7QWw-thuMMtKUzNyG8eD670wotlslk9mFyjz/dev"; 
+  // For a "production" version, you would deploy the web app and use the /exec URL.
+  // const deployedWebAppUrl = "YOUR_DEPLOYED_WEB_APP_EXEC_URL_HERE"; 
+  const viewHtmlInvoiceUrl = `${devWebAppBaseUrl}?orderNum=${orderData.orderNum}`;
+  
+  pdfEmailSection.addWidget(CardService.newTextParagraph().setText("<b>HTML Invoice Preview:</b>"));
+  pdfEmailSection.addWidget(CardService.newButtonSet().addButton(
+    CardService.newTextButton().setText("View HTML Invoice (Preview)")
+      .setOpenLink(CardService.newOpenLink().setUrl(viewHtmlInvoiceUrl))
+  ));
+  pdfEmailSection.addWidget(CardService.newDivider()); 
+  // --- End HTML Invoice Link ---
+
   if (orderData.pdfUrl && orderData.pdfName) {
       pdfEmailSection.addWidget(CardService.newTextParagraph().setText(`Previously generated PDF: "<b>${orderData.pdfName}</b>"`));
       pdfEmailSection.addWidget(CardService.newButtonSet().addButton(
-          CardService.newTextButton().setText("Open Generated PDF").setOpenLink(CardService.newOpenLink().setUrl(orderData.pdfUrl))
+          CardService.newTextButton().setText("Open Last Generated PDF").setOpenLink(CardService.newOpenLink().setUrl(orderData.pdfUrl))
       ));
       pdfEmailSection.addWidget(CardService.newDivider());
   }
 
-  const emailTemplates = getEmailTemplateList(); // From EmailTemplates.gs
+  const emailTemplates = getEmailTemplateList(); 
   const templateDropdown = CardService.newSelectionInput()
     .setFieldName("selected_email_template")
     .setTitle("Select Email Template");
   
-  // MODIFICATION: Explicitly set type to DROPDOWN
   if (templateDropdown && typeof templateDropdown.setType === 'function') {
     templateDropdown.setType(CardService.SelectionInputType.DROPDOWN);
   } else {
     console.warn("buildPdfAndEmailOptionsCard: setType method missing on templateDropdown.");
   }
-  // END MODIFICATION
   
   if (emailTemplates.length > 0) {
     templateDropdown.addItem("--- Choose a template ---", "", true);
@@ -834,12 +847,12 @@ function buildPdfAndEmailOptionsCard(e) { // Renamed from buildSuccessCardWithTe
   // const useHtmlPdfSwitch = CardService.newSwitch().setFieldName("use_html_pdf_flag").setValue("true").setSelected(false);
   // pdfEmailSection.addWidget(CardService.newDecoratedText().setText("Use Custom HTML Invoice for PDF?").setSwitchControl(useHtmlPdfSwitch));
 
-
   const generatePdfAndEmailAction = CardService.newAction()
     .setFunctionName("handleGeneratePdfAndComposeEmail") 
-    .setParameters({ orderNum: orderNum }); // pdfFileId will be handled inside the handler now
+    .setParameters({ orderNum: orderNum }); 
   pdfEmailSection.addWidget(CardService.newTextButton()
-    .setText("📨 Generate PDF & Create Draft Email")
+    // This button will now use generateInvoicePdfFromHtml inside its handler if we make that change
+    .setText("📨 Generate PDF & Create Draft Email") 
     .setOnClickAction(generatePdfAndEmailAction)
     .setTextButtonStyle(CardService.TextButtonStyle.FILLED));
   
@@ -847,19 +860,18 @@ function buildPdfAndEmailOptionsCard(e) { // Renamed from buildSuccessCardWithTe
     .setText("<font size='1' color='#555555'><i>If draft opens in wrong Google account, manually open 'Drafts' in correct Gmail tab.</i></font>"));
   card.addSection(pdfEmailSection);
 
-  // Final Action Section
   const finalActionsSection = CardService.newCardSection();
-  const clearAction = CardService.newAction().setFunctionName("handleClearAndClose").setParameters({orderNum: orderNum});
-  finalActionsSection.addWidget(CardService.newTextButton().setText("Done (Clear & Close Sidebar)").setOnClickAction(clearAction));
-  card.addSection(finalActionsSection);
-  
-  return card.build();
+  const clearAction = CardService.newAction().setFunctionName("handleClearAndClose").setParameters({orderNum: orderNum});
+  finalActionsSection.addWidget(CardService.newTextButton().setText("Done (Clear & Close Sidebar)").setOnClickAction(clearAction));
+  card.addSection(finalActionsSection);
+  
+  return card.build(); 
 }
 
 // === STEP 4.5: GENERATE PDF & COMPOSE EMAIL DRAFT ===
 /**
- * Handles PDF generation (from HTML), saving to Drive, and composing an email from a template.
- * MODIFIED: Simplifies Drive saving attempt to focus on basic root folder creation.
+ * Handles PDF generation (from HTML) and composing an email from a template.
+ * MODIFIED: Attaches PDF directly to email, bypassing Drive save due to persistent Drive errors.
  * @param {GoogleAppsScript.Addons.EventObject} e Event object from button click.
  * @return {GoogleAppsScript.Card_Service.ActionResponse} ActionResponse to open draft or show notification/updated card.
  */
@@ -867,7 +879,7 @@ function handleGeneratePdfAndComposeEmail(e) {
   const orderNum = e.parameters.orderNum;
   const selectedTemplateId = e.formInputs && e.formInputs.selected_email_template && e.formInputs.selected_email_template[0];
 
-  console.log(`handleGeneratePdfAndComposeEmail (Simplified Drive Test): Order: ${orderNum}, Template ID: "${selectedTemplateId}"`);
+  console.log(`handleGeneratePdfAndComposeEmail (Bypassing Drive Save): Order: ${orderNum}, Template ID: "${selectedTemplateId}"`);
 
   if (!selectedTemplateId || selectedTemplateId === "") {
     return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText("Please select an email template first.")).build();
@@ -881,59 +893,44 @@ function handleGeneratePdfAndComposeEmail(e) {
   }
   let orderData = JSON.parse(orderDataString); 
 
-  const template = getEmailTemplateById(selectedTemplateId); 
+  const template = getEmailTemplateById(selectedTemplateId); // From EmailTemplates.gs
   if (!template) {
     console.error(`handleGeneratePdfAndComposeEmail: Email template "${selectedTemplateId}" not found.`);
     return CardService.newActionResponseBuilder().setNotification(CardService.newNotification().setText("Error: Selected template not found.")).build();
   }
 
-  let pdfBlob;
+  let pdfBlob = null;
   let pdfName = `Invoice-${orderNum}-${(orderData['Customer Name'] || 'Unknown').replace(/[^a-zA-Z0-9\s]/g, "_").replace(/\s+/g, "_")}.pdf`;
-  let pdfFileId = null;
-  let pdfViewUrl = null;
+  // pdfFileId and pdfViewUrl will remain null as we are bypassing Drive save for now
+  orderData.pdfFileId = null; 
+  orderData.pdfUrl = null;   
+  orderData.pdfName = null; // Or set to pdfName if blob is created, but there won't be a link
 
   try {
     console.log(`handleGeneratePdfAndComposeEmail: Generating PDF from HTML for order ${orderNum}`);
-    pdfBlob = generateInvoicePdfFromHtml(orderNum, orderData); 
+    pdfBlob = generateInvoicePdfFromHtml(orderNum, orderData); // From Utils.gs
 
     if (!pdfBlob) {
       throw new Error("HTML PDF Blob generation returned null.");
     }
-    pdfName = pdfBlob.getName(); 
-    console.log(`handleGeneratePdfAndComposeEmail: PDF blob "${pdfName}" created from HTML.`);
-
-    // --- Simplified Drive Save Attempt ---
-    console.log(`handleGeneratePdfAndComposeEmail: Attempting to save PDF to Drive root folder.`);
-    let folder;
-    try {
-        folder = DriveApp.getRootFolder(); // Directly attempt to get root folder
-        console.log(`handleGeneratePdfAndComposeEmail: Accessed root Drive folder: "${folder.getName()}".`);
-    } catch (rootFolderError) {
-        console.error(`handleGeneratePdfAndComposeEmail: CRITICAL - Error accessing root Drive folder: ${rootFolderError.message}. Stack: ${rootFolderError.stack}`);
-        throw new Error(`Failed to access root Drive folder: ${rootFolderError.message}`);
-    }
+    pdfBlob.setName(pdfName); // Set name on the blob
+    orderData.pdfName = pdfName; // Store the name
+    console.log(`handleGeneratePdfAndComposeEmail: PDF blob "${pdfName}" created from HTML. Bypassing Drive save.`);
     
-    const pdfFile = folder.createFile(pdfBlob);
-    pdfFileId = pdfFile.getId();
-    pdfViewUrl = pdfFile.getUrl();
-    // --- End Simplified Drive Save Attempt ---
-    
-    orderData.pdfFileId = pdfFileId; 
-    orderData.pdfUrl = pdfViewUrl;   
-    orderData.pdfName = pdfName;     
-    PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(orderData)); 
-    console.log(`handleGeneratePdfAndComposeEmail: PDF "${pdfName}" saved. ID: ${pdfFileId}, URL: ${pdfViewUrl}`);
+    // Update orderData in properties even if Drive save is bypassed (e.g., to clear old PDF links)
+    PropertiesService.getUserProperties().setProperty(orderNum, JSON.stringify(orderData));
 
-  } catch (pdfOrDriveError) {
-    console.error(`handleGeneratePdfAndComposeEmail: Error during PDF generation or Drive save for order ${orderNum}: ${pdfOrDriveError.toString()}`);
+  } catch (pdfError) {
+    console.error(`handleGeneratePdfAndComposeEmail: Error during HTML PDF generation for order ${orderNum}: ${pdfError.toString()}`);
     const errorCard = buildPdfAndEmailOptionsCard({parameters: {orderNum: orderNum}}); 
     return CardService.newActionResponseBuilder()
-        .setNotification(CardService.newNotification().setText(`Error creating/saving PDF: ${pdfOrDriveError.message}. Please try again or check logs.`))
+        .setNotification(CardService.newNotification().setText(`Error creating PDF: ${pdfError.message}. Please try again or check logs.`))
         .setNavigation(CardService.newNavigation().updateCard(errorCard)) 
         .build();
   }
   
-  const { subject, body } = populateEmailTemplate(template, orderData, pdfFileId); 
+  // Proceed to draft email, attaching the in-memory blob
+  const { subject, body } = populateEmailTemplate(template, orderData, null); // Pass null for pdfFileId as we are not using Drive link
 
   try {
     const thread = GmailApp.getThreadById(orderData.threadId);
@@ -945,7 +942,10 @@ function handleGeneratePdfAndComposeEmail(e) {
       to: orderData['Contact Email'] || orderData['Customer Address Email'] || messageToReplyTo.getFrom(),
     };
     if (pdfBlob) { 
-      draftOptions.attachments = [pdfBlob];
+      draftOptions.attachments = [pdfBlob]; // Attach the blob directly
+      console.log(`handleGeneratePdfAndComposeEmail: Attaching PDF blob "${pdfBlob.getName()}" to email draft.`);
+    } else {
+      console.warn(`handleGeneratePdfAndComposeEmail: PDF blob was not available for attachment for order ${orderNum}.`);
     }
 
     const draft = messageToReplyTo.createDraftReply("", draftOptions);
@@ -954,24 +954,24 @@ function handleGeneratePdfAndComposeEmail(e) {
     console.log(`handleGeneratePdfAndComposeEmail: Draft created. ID: ${draft.getId()}`);
     const draftUrl = `https://mail.google.com/mail/u/0/#drafts?compose=${draft.getId()}`;
     
-    const successCardWithPdfLink = buildPdfAndEmailOptionsCard({parameters: {orderNum: orderNum}});
+    // Rebuild the options card. It won't show "Open Last Generated PDF" unless a previous attempt *did* save to Drive.
+    const optionsCardAfterDraft = buildPdfAndEmailOptionsCard({parameters: {orderNum: orderNum}});
 
     return CardService.newActionResponseBuilder()
       .setOpenLink(CardService.newOpenLink().setUrl(draftUrl))
-      .setNotification(CardService.newNotification().setText("PDF generated and email draft prepared!"))
-      .setNavigation(CardService.newNavigation().updateCard(successCardWithPdfLink)) 
+      .setNotification(CardService.newNotification().setText("PDF generated and email draft prepared!" + (pdfBlob ? "" : " (PDF attachment failed).")))
+      .setNavigation(CardService.newNavigation().updateCard(optionsCardAfterDraft)) 
       .build();
 
   } catch (draftErr) {
     console.error(`handleGeneratePdfAndComposeEmail: Error creating draft for ${orderNum}: ${draftErr.toString()}`);
     const errorCard = buildPdfAndEmailOptionsCard({parameters: {orderNum: orderNum}});
     return CardService.newActionResponseBuilder()
-      .setNotification(CardService.newNotification().setText("Error creating email draft: " + draftErr.message + (pdfBlob ? " PDF was generated." : "")))
+      .setNotification(CardService.newNotification().setText("Error creating email draft: " + draftErr.message + (pdfBlob ? " PDF was generated but draft failed." : " PDF and draft failed.")))
       .setNavigation(CardService.newNavigation().updateCard(errorCard))
       .build();
   }
 }
-
 
 /**
  * Clears user properties for the current order and closes the sidebar.
@@ -1000,3 +1000,56 @@ function handleClearAndClose(e) {
     }
     return CardService.newActionResponseBuilder().setNavigation(CardService.newNavigation().popToRoot()).setNotification(CardService.newNotification().setText("Order data cleared. Add-on is ready for the next email.")).build();
 }
+
+/**
+ * Handles GET requests to the web app.
+ * Serves the HTML invoice when accessed with an 'orderNum' URL parameter.
+ * This function enables viewing the invoice as a standalone HTML page.
+ * @param {object} e The event parameter for a web app doGet request.
+ * @return {HtmlService.HtmlOutput} The HTML page for the invoice or an error message.
+ */
+function doGet(e) {
+  console.log("doGet for Web App triggered. Event parameters:", JSON.stringify(e.parameter));
+  const orderNum = e.parameter.orderNum;
+
+  if (!orderNum) {
+    console.warn("doGet: Order Number (orderNum) not provided in URL parameter.");
+    return HtmlService.createHtmlOutput('<h1>Error: Order Number not provided.</h1><p>Please ensure the URL includes "?orderNum=YOUR_ORDER_NUMBER".</p>');
+  }
+  console.log(`doGet: Attempting to display HTML invoice for orderNum: ${orderNum}`);
+
+  // SECURITY NOTE: If "Who has access" for the web app is set to "Anyone" or "Anyone with Google account",
+  // consider if UserProperties (which are per-user) is the right place to store orderData if it's meant
+  // to be universally accessible by just an orderNum. For "Execute as Me", UserProperties will be *your* properties.
+  // If the link is only for the add-on user who generated it, UserProperties is fine.
+  const userProps = PropertiesService.getUserProperties(); 
+  const orderDataString = userProps.getProperty(orderNum);
+
+  if (!orderDataString) {
+    console.error(`doGet: Order data not found in UserProperties for Order #${orderNum}.`);
+    return HtmlService.createHtmlOutput(`<h1>Error: Order data not found for Order #${orderNum}.</h1><p>The order details may have been cleared or the order number is incorrect.</p>`);
+  }
+  const orderData = JSON.parse(orderDataString);
+  console.log(`doGet: Successfully retrieved orderData for ${orderNum}. Customer: ${orderData['Customer Name'] || 'Unknown'}`);
+
+  try {
+    // Calls the helper function (which should now be in Utils.gs) to get the populated HTML.
+    const htmlContent = getPopulatedInvoiceHtmlForWebApp(orderNum, orderData); 
+    
+    if (!htmlContent) {
+        console.error(`doGet: getPopulatedInvoiceHtmlForWebApp returned null or empty for order ${orderNum}.`);
+        return HtmlService.createHtmlOutput(`<h1>Error: Could not generate HTML content for invoice #${orderNum}.</h1>`);
+    }
+
+    const output = HtmlService.createHtmlOutput(htmlContent);
+    output.setTitle(`Invoice #${orderNum} - El Merkury`);
+    // output.setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL); // Only if needed for embedding in specific scenarios.
+    console.log(`doGet: Successfully generated and serving HTML invoice for orderNum: ${orderNum}`);
+    return output;
+
+  } catch (err) {
+    console.error(`Error in doGet generating HTML invoice for Order ${orderNum}: ${err.toString()}\nStack (if available): ${err.stack}`);
+    return HtmlService.createHtmlOutput(`<h1>Error generating invoice:</h1><p>${err.message}</p><p>Please check the script logs for more details.</p>`);
+  }
+}
+

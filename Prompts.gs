@@ -29,6 +29,7 @@ function _buildContactInfoPrompt(body) {
          'Customer Address Email: (This is the primary email for the *customer placing the order*, typically found in their signature.)\n' +
          'Delivery Date: (Must be from the email body, not the email header. Extract it from the body, then format as YYYY-MM-DD. For example, May 20th, 2025 should be 2025-05-20.)\n' +
          'Delivery Time: (Must be from the email body, not the email header. Extract it from the body, then format it as HH:MM AM/PM, e.g., "7:00 PM", "9:30 AM")\n' +
+         'Explicit Tip Mentioned: (If the customer explicitly states a tip amount (e.g., "$20 tip", "add $25 for gratuity") or a percentage for a tip (e.g., "15% tip", "include an 18% gratuity"), extract this value exactly as mentioned (e.g., "$20", "25", "15%", "18 percent"). If no tip is explicitly mentioned, return "0" or an empty string.)\n' +
          'Include Utensils?: (If it is clearly specified in the body of the email that the customer wishes utensils to be included, then mark Yes. Otherwise, return Unknown)\n' +
          'If yes: how many?: (If "Include Utensils?" is Yes, note how many should be included. If a number is not specified but utensils are requested, return "1" or a sensible default. If utensils are not requested or "Include Utensils?" is No/Unknown, return 0 or an empty string.)\n' +
          'Delivery Contact Person: (The specific person who will receive the delivery, if different from Customer Name, e.g., "Romina")\n' +
@@ -61,7 +62,7 @@ function _buildStructuredItemExtractionPrompt(body) {
          '---------------------\n' +
          body +
          '\n---------------------\n' +
-         'Remember to be thorough and capture all details for each item line accurately in the specified JSON structure.';
+         'Remember to be thorough and capture all details for each item line accurately in the specified JSON structure. If the email is a chain, please look through all the emails sent by the customer (e.g., the sender of the email did NOT have @elmerkury.com in their domain name). Start with the most recent email as the source of truth, and then work backwards if there are missing values. If there are two values within the email chain for the same field, use the value from the more recent email. For instance, if \"Large Pupusa Tray (Chicharron Pork)\" is listed in the most recent email as well as the original email in a chain, then only include it once in the list of items';
 }
 
 /**

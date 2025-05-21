@@ -1,5 +1,6 @@
 {
   "timeZone": "America/New_York",
+  "runtimeVersion": "V8",
   "dependencies": {
     "enabledAdvancedServices": [
       {
@@ -14,8 +15,8 @@
       },
       {
         "userSymbol": "Drive",
-        "version": "v3",
-        "serviceId": "drive"
+        "serviceId": "drive",
+        "version": "v3"
       }
     ]
   },
@@ -27,15 +28,19 @@
     "https://www.googleapis.com/auth/script.external_request",
     "https://www.googleapis.com/auth/cloud-platform",
     "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/drive.file"
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive"
   ],
-  "runtimeVersion": "V8",
+  "urlFetchWhitelist": [
+    "https://docs.google.com/",
+    "https://generativelanguage.googleapis.com/"
+  ],
   "addOns": {
     "common": {
       "name": "El Merkury Catering",
       "logoUrl": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcSF2tJ0eBvs7HLGKNv-xlBNhWXiQKX_zLvpag&s",
       "layoutProperties": {
-        "primaryColor": "#FF0000",
+        "primaryColor": "#FFC000",
         "secondaryColor": "#FFFFFF"
       }
     },
@@ -47,7 +52,9 @@
         }
       ],
       "openLinkUrlPrefixes": [
-        "https://script.google.com"
+        "https://script.google.com",
+        "https://mail.google.com",
+        "https://docs.google.com"
       ]
     }
   }

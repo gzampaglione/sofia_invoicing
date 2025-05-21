@@ -1067,3 +1067,131 @@ function generateInvoicePdfFromHtml(orderNum, orderData) {
   }
 }
 
+/**
+ * Prepares the data and populates the HTML invoice template.
+ * MODIFIED: Structures data for two-column layout, adds PO, refines notes.
+ * @param {string} orderNum The order number.
+ * @param {object} orderData The complete order data object.
+ * @return {string} The populated HTML string for the invoice.
+ * @throws {Error} If the HTML template cannot be created or data is missing.
+ */
+function getPopulatedInvoiceHtmlForWebApp(orderNum, orderData) {
+  console.log(`getPopulatedInvoiceHtmlForWebApp: Preparing HTML for order ${orderNum}`);
+  if (!orderData) {
+    console.error(`getPopulatedInvoiceHtmlForWebApp: Order data missing for order ${orderNum}.`);
+    throw new Error("Order data is missing for HTML invoice.");
+  }
+
+  let htmlTemplate;
+  try {
+    htmlTemplate = HtmlService.createTemplateFromFile('invoice.html');
+  } catch (e) {
+    console.error(`getPopulatedInvoiceHtmlForWebApp: Failed to create template from 'invoice.html'. Error: ${e.toString()}`);
+    throw new Error("Invoice HTML template file not found or error.");
+  }
+  
+  const invoiceData = {};
+  invoiceData.number = orderData.orderNum || 'N/A';
+  invoiceData.dateGenerated = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MMMM d, yyyy");
+  invoiceData.poNumber = orderData['PurchaseOrderNumber'] || ''; // Will be blank if not present in orderData
+
+  invoiceData.customerName = orderData['Customer Name'] || 'N/A';
+  invoiceData.customerClient = orderData['Client'] || ''; // Added Client for Billed To
+  let custAddressParts = [
+      orderData['Customer Address Line 1'],
+      orderData['Customer Address Line 2'],
+      `${orderData['Customer Address City'] || ''}${orderData['Customer Address City'] && (orderData['Customer Address State'] || orderData['Customer Address ZIP']) ? ', ' : ''}${orderData['Customer Address State'] || ''} ${orderData['Customer Address ZIP'] || ''}`.trim()
+  ];
+  invoiceData.customerAddress = custAddressParts.filter(Boolean).join('\n');
+  invoiceData.customerPhone = _formatPhone(orderData['Customer Address Phone'] || '');
+  invoiceData.customerEmail = orderData['Customer Address Email'] || '';
+
+  // Delivery Information
+  invoiceData.deliveryContactName = orderData['Contact Person'] || invoiceData.customerName;
+  invoiceData.deliveryContactPhone = _formatPhone(orderData['Contact Phone'] || orderData['Customer Address Phone'] || ''); // Use specific delivery phone or fallback
+  // For HTML invoice, delivery address is same as customer address unless specific delivery fields are populated and preferred.
+  // If you have distinct orderData['Delivery Address Line 1'], etc. fields, use them here.
+  invoiceData.deliveryFullAddress = invoiceData.customerAddress; 
+
+
+  invoiceData.deliveryDateFormatted = "Not specified";
+  if (orderData['Delivery Date']) { 
+      try {
+          const dateStr = orderData['Delivery Date'];
+          let tempDate;
+          if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+              const parts = dateStr.split('-');
+              tempDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+          } else { tempDate = new Date(_parseDateToMsEpoch(dateStr)); }
+          if (!isNaN(tempDate.getTime())) {
+               invoiceData.deliveryDateFormatted = Utilities.formatDate(tempDate, Session.getScriptTimeZone(), "EEEE, MMMM d, yyyy");
+          } else { invoiceData.deliveryDateFormatted = dateStr; }
+      } catch (e) { invoiceData.deliveryDateFormatted = orderData['Delivery Date']; }
+  }
+  invoiceData.deliveryTimeFormatted = orderData['Delivery Time'] ? _normalizeTimeFormat(orderData['Delivery Time']) : "Not specified";
+  
+  invoiceData.items = (orderData['ConfirmedQBItems'] || []).map(item => {
+    let customerNotesOnly = '';
+    if (item.kitchen_notes_and_flavors) {
+      const notesString = item.kitchen_notes_and_flavors;
+      // Try to extract only the part after "Customer Notes:"
+      const customerNotesMatch = notesString.match(/Customer Notes:\s*(.*)/i);
+      if (customerNotesMatch && customerNotesMatch[1]) {
+        customerNotesOnly = customerNotesMatch[1].trim();
+        // If "Selected Flavors" was also present, ensure it's not part of customerNotesOnly here
+        const selectedFlavorsPrefix = "Selected Flavors:";
+        if (customerNotesOnly.toLowerCase().startsWith(selectedFlavorsPrefix.toLowerCase())) {
+            // This case should ideally not happen if parsing was clean, but as a safeguard
+            customerNotesOnly = ""; // Or re-evaluate logic if "Customer Notes:" can appear inside "Selected Flavors:"
+        }
+      } else if (!notesString.toLowerCase().includes("selected flavors:")) {
+        // If "Selected Flavors:" is not present at all, assume the whole string is customer notes
+        customerNotesOnly = notesString.trim();
+      }
+      // If only "Selected Flavors:" is present, customerNotesOnly will remain empty, which is correct.
+    }
+    return {
+      description: item.original_email_description || item.quickbooks_item_name,
+      qty: item.quantity,
+      unitPrice: parseFloat(item.unit_price || 0),
+      total: (parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0),
+      customerNotesOnly: customerNotesOnly 
+    };
+  });
+
+  invoiceData.itemsSubtotal = 0;
+  invoiceData.items.forEach(item => invoiceData.itemsSubtotal += item.total);
+  invoiceData.tip = parseFloat(orderData['TipAmount'] || 0);
+  invoiceData.otherChargesAmount = parseFloat(orderData['OtherChargesAmount'] || 0);
+  invoiceData.otherChargesDescription = orderData['OtherChargesDescription'] || "Other Charges";
+  
+  const baseDeliveryFee = typeof BASE_DELIVERY_FEE !== 'undefined' ? BASE_DELIVERY_FEE : 0;
+  const cutoffHour = typeof DELIVERY_FEE_CUTOFF_HOUR !== 'undefined' ? DELIVERY_FEE_CUTOFF_HOUR : 16;
+  const after4PMFee = typeof AFTER_4PM_DELIVERY_FEE !== 'undefined' ? AFTER_4PM_DELIVERY_FEE : 0;
+  const costPerUtensil = typeof COST_PER_UTENSIL_SET !== 'undefined' ? COST_PER_UTENSIL_SET : 0;
+
+  invoiceData.deliveryFee = parseFloat(baseDeliveryFee);
+  if (orderData['master_delivery_time_ms']) {
+      const deliveryHour = new Date(orderData['master_delivery_time_ms']).getHours();
+      if (deliveryHour >= cutoffHour) {
+          invoiceData.deliveryFee = parseFloat(after4PMFee);
+      }
+  }
+  
+  invoiceData.utensilsCost = 0;
+  invoiceData.utensilsCount = 0; 
+  if (orderData['Include Utensils?'] === 'Yes') {
+      const numUtensils = parseInt(orderData['If yes: how many?']) || 0;
+      if (numUtensils > 0) {
+          invoiceData.utensilsCount = numUtensils;
+          invoiceData.utensilsCost = numUtensils * costPerUtensil;
+      }
+  }
+  invoiceData.grandTotal = invoiceData.itemsSubtotal + invoiceData.tip + invoiceData.otherChargesAmount + invoiceData.deliveryFee + invoiceData.utensilsCost;
+
+  htmlTemplate.invoice = invoiceData;
+  const htmlContent = htmlTemplate.evaluate().getContent();
+  console.log(`getPopulatedInvoiceHtmlForWebApp: HTML content generated for order ${orderNum}. Length: ${htmlContent.length}`);
+  return htmlContent;
+}
+
