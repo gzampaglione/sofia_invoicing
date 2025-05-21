@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Invoice #<?!= invoice.number ?></title>
+    <base target="_top"> <style>
+      body {
+        font-family: 'Segoe UI', sans-serif;
+        max-width: 750px;
+        margin: auto;
+        padding: 20px;
+        color: #333;
+      }
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 30px;
+        border-bottom: 2px solid #eee;
+        padding-bottom: 10px;
+      }
+      .logo {
+        max-height: 60px;
+      }
+      h1 {
+        font-size: 24px;
+        margin: 0;
+      }
+      .info, .delivery {
+        margin-bottom: 20px;
+        line-height: 1.5;
+      }
+      .address-block { /* Helper class for multi-line addresses */
+        white-space: pre-line; /* Preserves newlines from your data */
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+      }
+      table th, table td {
+        padding: 10px;
+        border: 1px solid #ddd;
+        text-align: left;
+        vertical-align: top;
+      }
+      table th {
+        background-color: #f8f8f8;
+      }
+      .total-line {
+        text-align: right;
+        font-size: 16px;
+        padding-top: 5px;
+      }
+      .total-line.label { /* For labels in the total section */
+        font-weight: normal; 
+      }
+      .grand-total {
+        font-weight: bold;
+        font-size: 18px;
+        border-top: 2px solid #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <img src="https://ef73da3b8861334252f5.cdn6.editmysite.com/uploads/b/ef73da3b8861334252f5e85c05a5e2692b4b9bd41496b91d26cfe0c442daebe7/2021-04-07_13-44-38_1617817326.jpg" class="logo" alt="El Merkury Logo" />
+      <div>
+        <h1>Invoice #<?!= invoice.number ?></h1>
+        <div>Generated: <?!= invoice.dateGenerated ?></div>
+      </div>
+    </div>
+
+    <div class="info">
+      <strong>Billed To:</strong><br />
+      <div class="address-block"><?!= invoice.customerName ?>
+<?!= invoice.customerAddress ?></div>
+    </div>
+
+    <div class="delivery">
+      <strong>Delivery Date:</strong> <?!= invoice.deliveryDateFormatted ?><br />
+      <strong>Delivery Time:</strong> <?!= invoice.deliveryTimeFormatted ?><br />
+      <strong>Location:</strong>
+      <div class="address-block"><?!= invoice.deliveryFullAddress ?></div>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Description</th>
+          <th>Qty</th>
+          <th>Unit Price</th>
+          <th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <? for (var i = 0; i < invoice.items.length; i++) { var item = invoice.items[i]; ?>
+          <tr>
+            <td>
+              <?!= item.description ?>
+              <? if (item.notes && item.notes.trim() !== "") { ?>
+                <br /><small style="color: #555;"><em>Notes: <?!= item.notes ?></em></small>
+              <? } ?>
+            </td>
+            <td><?!= item.qty ?></td>
+            <td>$<?!= item.unitPrice.toFixed(2) ?></td>
+            <td>$<?!= item.total.toFixed(2) ?></td>
+          </tr>
+        <? } ?>
+        
+        <tr>
+          <td colspan="3" class="total-line label">Items Subtotal</td>
+          <td>$<?!= invoice.itemsSubtotal.toFixed(2) ?></td>
+        </tr>
+
+        <? if (invoice.tip > 0) { ?>
+        <tr>
+          <td colspan="3" class="total-line label">Tip</td>
+          <td>$<?!= invoice.tip.toFixed(2) ?></td>
+        </tr>
+        <? } ?>
+
+        <? if (invoice.otherChargesAmount > 0 && invoice.otherChargesDescription) { ?>
+        <tr>
+          <td colspan="3" class="total-line label"><?!= invoice.otherChargesDescription ?></td>
+          <td>$<?!= invoice.otherChargesAmount.toFixed(2) ?></td>
+        </tr>
+        <? } ?>
+        
+        <? if (invoice.deliveryFee > 0) { ?>
+        <tr>
+          <td colspan="3" class="total-line label">Delivery Fee</td>
+          <td>$<?!= invoice.deliveryFee.toFixed(2) ?></td>
+        </tr>
+        <? } ?>
+
+        <? if (invoice.utensilsCost > 0) { ?>
+        <tr>
+          <td colspan="3" class="total-line label">Utensils (<?!= invoice.utensilsCount ?> sets)</td>
+          <td>$<?!= invoice.utensilsCost.toFixed(2) ?></td>
+        </tr>
+        <? } ?>
+
+        <tr class="grand-total">
+          <td colspan="3" class="total-line">Grand Total</td>
+          <td>$<?!= invoice.grandTotal.toFixed(2) ?></td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div>2104 Chestnut St, Philadelphia, PA 19103 | (267) 457-5952</div>
+  </body>
+</html>

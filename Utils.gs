@@ -590,95 +590,105 @@ function populateInvoiceSheet(orderNum) {
 }
 
 /**
- * Creates a PDF of the populated invoice sheet and prepares a draft email reply with it attached.
- * Attempts to get the sheet with retries. Proceeds to UrlFetch PDF generation if GID can be obtained,
- * even if the sheet object reports 'getAs' as missing (as UrlFetch version doesn't use it).
- * @param {string} orderNum The order number.
+ * Creates a PDF blob of the specified sheet using UrlFetchApp.
+ * @param {string} orderNum The order number (for logging).
  * @param {string} populatedSheetSpreadsheetId The ID of the spreadsheet.
  * @param {string} populatedSheetName The name of the populated invoice sheet.
- * @returns {{pdfBlob: GoogleAppsScript.Base.Blob, draft: GoogleAppsScript.Gmail.GmailDraft, draftId: string}}
- * @throws {Error} If processing fails, including if a sheet GID cannot be obtained.
+ * @returns {GoogleAppsScript.Base.Blob|null} The PDF blob or null if an error occurs.
+ * @throws {Error} If processing fails to obtain a sheet GID or PDF.
  */
-function createPdfAndPrepareEmailReply(orderNum, populatedSheetSpreadsheetId, populatedSheetName) {
-  const userProps = PropertiesService.getUserProperties();
-  const orderDataString = userProps.getProperty(orderNum);
-  if (!orderDataString) {
-    console.error(`PDFEmail: Order data for ${orderNum} not found in createPdfAndPrepareEmailReply.`);
-    throw new Error("Order data not found for PDF/email creation.");
-  }
-  const orderData = JSON.parse(orderDataString); // Parsed once for use here and to pass to helper
-
+function createPdfBlobOnly(orderNum, populatedSheetSpreadsheetId, populatedSheetName) {
+  console.log(`createPdfBlobOnly: Initiating PDF blob creation for order ${orderNum}. SpreadsheetID: ${populatedSheetSpreadsheetId}, SheetName: "${populatedSheetName}"`);
+  
   try {
-    console.log(`PDFEmail: Initiating PDF creation for order ${orderNum}. Target Spreadsheet ID: ${populatedSheetSpreadsheetId}, Target Sheet Name: "${populatedSheetName}"`);
     const spreadsheet = SpreadsheetApp.openById(populatedSheetSpreadsheetId); 
     if (!spreadsheet) {
-      console.error(`PDFEmail: Critical - Failed to open spreadsheet with ID: ${populatedSheetSpreadsheetId}. Cannot proceed.`);
-      throw new Error("Failed to open spreadsheet for PDF generation. Check Spreadsheet ID and permissions.");
+      console.error(`createPdfBlobOnly: Critical - Failed to open spreadsheet with ID: ${populatedSheetSpreadsheetId}.`);
+      throw new Error("Failed to open spreadsheet for PDF generation.");
     }
-    console.log(`PDFEmail: Spreadsheet "${spreadsheet.getName()}" (ID: ${spreadsheet.getId()}) opened successfully.`);
+    console.log(`createPdfBlobOnly: Spreadsheet "${spreadsheet.getName()}" (ID: ${spreadsheet.getId()}) opened.`);
 
-    let sheetToExport = null;     // We still need the sheet object for its name and GID
-    let sheetGidForExport = null; // This is what the UrlFetch method critically needs
+    let sheetForPdf = null;
+    let sheetGid = null;
     let attempts = 0;
-    const MAX_ATTEMPTS = 3;     // Number of retries
+    const MAX_ATTEMPTS = 3;
 
     while (attempts < MAX_ATTEMPTS) {
         attempts++;
-        console.log(`PDFEmail: Attempt ${attempts}/${MAX_ATTEMPTS} to getSheetByName("${populatedSheetName}").`);
+        console.log(`createPdfBlobOnly: Attempt ${attempts}/${MAX_ATTEMPTS} to getSheetByName("${populatedSheetName}").`);
         let currentSheetTry = spreadsheet.getSheetByName(populatedSheetName);
         
         if (currentSheetTry) {
-            let currentGid = null;
+            let currentGidAttempt = null;
             try {
-                currentGid = currentSheetTry.getSheetId(); // Attempt to get GID
-            } catch (gidError) {
-                console.warn(`PDFEmail: Attempt ${attempts} - Error getting GID for sheet named "${currentSheetTry.getName()}": ${gidError.message}`);
+                currentGidAttempt = currentSheetTry.getSheetId();
+            } catch (gidErr) {
+                console.warn(`createPdfBlobOnly: Attempt ${attempts} - Error getting GID for sheet "${currentSheetTry.getName()}": ${gidErr.message}`);
             }
 
-            const hasGetAs = typeof currentSheetTry.getAs === 'function'; // Still useful to log this
-            console.log(`PDFEmail: Attempt ${attempts} - Sheet named "${currentSheetTry.getName()}" found. Typeof: ${typeof currentSheetTry}. Has 'getAs' method: ${hasGetAs}. GID: ${currentGid}`);
+            const hasGetAs = typeof currentSheetTry.getAs === 'function'; // Log for info
+            console.log(`createPdfBlobOnly: Attempt ${attempts} - Sheet named "${currentSheetTry.getName()}" found. GID: ${currentGidAttempt}. Has getAs: ${hasGetAs}`);
             
-            if (currentGid !== null && currentGid !== undefined) { // Primary check is for a valid GID
-                sheetToExport = currentSheetTry; // Store the sheet object
-                sheetGidForExport = currentGid;  // Store the GID
-                console.log(`PDFEmail: Successfully obtained sheet object with GID ${sheetGidForExport} on attempt ${attempts}. 'getAs' functionality is ${hasGetAs ? 'present' : 'MISSING (will use UrlFetch)'}.`);
-                // We don't break here if getAs is missing, because UrlFetch doesn't need it. We just need GID.
-                break; // Exit loop, valid GID obtained
+            if (currentGidAttempt !== null && currentGidAttempt !== undefined) {
+                sheetForPdf = currentSheetTry;
+                sheetGid = currentGidAttempt;
+                console.log(`createPdfBlobOnly: Successfully obtained sheet GID ${sheetGid} on attempt ${attempts}.`);
+                break; 
             } else {
-                console.warn(`PDFEmail: Attempt ${attempts} - Sheet object obtained for "${currentSheetTry.getName()}" but GID is null/undefined or failed to retrieve. Activating and will retry if attempts remain.`);
+                console.warn(`createPdfBlobOnly: Attempt ${attempts} - Sheet GID is null/undefined. Activating and will retry.`);
                 try {
                     spreadsheet.setActiveSheet(currentSheetTry);
                     SpreadsheetApp.flush();
-                    console.log(`PDFEmail: Attempt ${attempts} - Activated sheet "${currentSheetTry.getName()}".`);
+                    console.log(`createPdfBlobOnly: Attempt ${attempts} - Activated sheet "${currentSheetTry.getName()}".`);
                 } catch (activateErr) {
-                    console.warn(`PDFEmail: Attempt ${attempts} - Could not activate sheet "${currentSheetTry.getName()}". Error: ${activateErr.message}.`);
+                    console.warn(`createPdfBlobOnly: Attempt ${attempts} - Could not activate sheet: ${activateErr.message}.`);
                 }
             }
         } else {
-             console.warn(`PDFEmail: Attempt ${attempts} - Sheet named "${populatedSheetName}" not found in spreadsheet "${spreadsheet.getName()}".`);
+             console.warn(`createPdfBlobOnly: Attempt ${attempts} - Sheet "${populatedSheetName}" not found.`);
         }
 
-        if (attempts < MAX_ATTEMPTS && (sheetGidForExport === null || sheetGidForExport === undefined) ) { // Continue retrying if GID not found
+        if (attempts < MAX_ATTEMPTS && (sheetGid === null || sheetGid === undefined) ) {
             const delayMs = 1000 * attempts; 
-            console.log(`PDFEmail: Waiting ${delayMs}ms before next attempt to get sheet.`);
+            console.log(`createPdfBlobOnly: Waiting ${delayMs}ms before next attempt.`);
             Utilities.sleep(delayMs);
         }
-    } // End of while loop
+    } 
     
-    if (!sheetToExport || sheetGidForExport === null || sheetGidForExport === undefined) { 
+    if (!sheetForPdf || sheetGid === null || sheetGid === undefined) { 
       const availableSheets = spreadsheet.getSheets().map(s => s.getName()).join(', ');
-      console.error(`PDFEmail: Critical - After ${MAX_ATTEMPTS} attempts, could not reliably obtain sheet GID for "${populatedSheetName}". Available sheets: [${availableSheets}]. Cannot generate PDF.`);
-      throw new Error(`The sheet "${populatedSheetName}" could not be reliably processed to get its GID for PDF export after retries.`);
+      console.error(`createPdfBlobOnly: Critical - After ${MAX_ATTEMPTS} attempts, could not get GID for "${populatedSheetName}". Available: [${availableSheets}].`);
+      throw new Error(`Sheet "${populatedSheetName}" GID could not be obtained for PDF export.`);
     }
     
-    // If a sheet object and its GID are obtained, proceed to generate PDF using the UrlFetch helper
-    console.log(`PDFEmail: Proceeding to call generatePdfFromSheet (UrlFetch version) with sheet GID: ${sheetGidForExport} for sheet named "${sheetToExport.getName()}".`);
-    // Pass sheetToExport for context (like name, GID), populatedSheetName for the PDF name, orderData, and the spreadsheet object.
-    return generatePdfFromSheet(sheetToExport, populatedSheetName, orderData, spreadsheet);
+    // Generate PDF using UrlFetch
+    const pdfExportUrl = `https://docs.google.com/spreadsheets/d/${spreadsheet.getId()}/export` +
+                         `?format=pdf&gid=${sheetGid}&scale=4&top_margin=0.50&bottom_margin=0.50` +
+                         `&left_margin=0.50&right_margin=0.50&horizontal_alignment=CENTER&vertical_alignment=TOP` +
+                         `&gridlines=false&printnotes=false&pageorder=1&sheetnames=false&printtitle=false` +
+                         `&attachment=true&portrait=true&size=letter`;
+    console.log(`createPdfBlobOnly: PDF Export URL (first 150): ${pdfExportUrl.substring(0,150)}...`);
+    
+    const response = UrlFetchApp.fetch(pdfExportUrl, {
+        headers: { 'Authorization': `Bearer ${ScriptApp.getOAuthToken()}` },
+        muteHttpExceptions: true
+    });
+
+    const responseCode = response.getResponseCode();
+    if (responseCode === 200) {
+        const pdfBlob = response.getBlob().setName(`${populatedSheetName}.pdf`);
+        console.log(`createPdfBlobOnly: PDF blob created: ${pdfBlob.getName()}, Size: ${pdfBlob.getBytes().length} bytes.`);
+        return pdfBlob;
+    } else {
+        const errorContent = response.getContentText();
+        console.error(`createPdfBlobOnly: UrlFetch PDF export failed. Code: ${responseCode}. Response: ${errorContent.substring(0, 500)}`);
+        throw new Error(`PDF export via UrlFetch failed with code ${responseCode}.`);
+    }
 
   } catch (e) { 
-    console.error(`Error in createPdfAndPrepareEmailReply for order ${orderNum}: ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`); 
-    throw new Error(`Failed to create PDF or prepare email for order ${orderNum}: ${e.message}`); 
+    console.error(`Error in createPdfBlobOnly for order ${orderNum}, sheet "${populatedSheetName}": ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`); 
+    // Return null or rethrow, depending on how handleGenerateInvoiceAndEmail should react
+    return null; 
   }
 }
 
@@ -949,3 +959,111 @@ function _findBestStandardFlavorMatch(aiFlavorString, itemStandardFlavorsArray) 
 
   return null; // No good match found
 }
+
+/**
+ * Generates an invoice PDF from an HTML template and order data.
+ * @param {string} orderNum The order number for naming and logging.
+ * @param {object} orderData The complete order data object from UserProperties.
+ * @return {GoogleAppsScript.Base.Blob|null} The generated PDF blob, or null if an error occurs.
+ */
+function generateInvoicePdfFromHtml(orderNum, orderData) {
+  console.log(`generateInvoicePdfFromHtml: Starting HTML-based invoice generation for order ${orderNum}`);
+  try {
+    const htmlTemplate = HtmlService.createTemplateFromFile('invoice.html'); // Name of your HTML file in the project
+
+    // --- Prepare data object for the HTML Template ---
+    const invoiceData = {};
+    invoiceData.number = orderData.orderNum;
+    invoiceData.dateGenerated = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "MMMM d, yyyy");
+    
+    invoiceData.customerName = orderData['Customer Name'] || 'N/A';
+    let custAddressParts = [
+        orderData['Customer Address Line 1'],
+        orderData['Customer Address Line 2'],
+        `${orderData['Customer Address City'] || ''}${orderData['Customer Address City'] && (orderData['Customer Address State'] || orderData['Customer Address ZIP']) ? ', ' : ''}${orderData['Customer Address State'] || ''} ${orderData['Customer Address ZIP'] || ''}`.trim()
+    ];
+    invoiceData.customerAddress = custAddressParts.filter(Boolean).join('\n'); // Filter out empty parts before joining
+
+    // Format delivery date (assuming orderData['Delivery Date'] is 'YYYY-MM-DD')
+    invoiceData.deliveryDateFormatted = "Not specified";
+    if (orderData['Delivery Date']) {
+        try {
+            const dateStr = orderData['Delivery Date'];
+            let tempDate;
+            if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                const parts = dateStr.split('-');
+                tempDate = new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, parseInt(parts[2]));
+            } else { tempDate = new Date(_parseDateToMsEpoch(dateStr)); } // Fallback
+            if (!isNaN(tempDate.getTime())) {
+                 invoiceData.deliveryDateFormatted = Utilities.formatDate(tempDate, Session.getScriptTimeZone(), "EEEE, MMMM d, yyyy");
+            } else { invoiceData.deliveryDateFormatted = dateStr; }
+        } catch (e) { invoiceData.deliveryDateFormatted = orderData['Delivery Date'] || "Not specified"; }
+    }
+    invoiceData.deliveryTimeFormatted = orderData['Delivery Time'] ? _normalizeTimeFormat(orderData['Delivery Time']) : "Not specified";
+    
+    // For delivery location, using customer address for now. Adjust if separate fields are used.
+    invoiceData.deliveryFullAddress = invoiceData.customerAddress; 
+
+    invoiceData.items = (orderData['ConfirmedQBItems'] || []).map(item => {
+      return {
+        description: item.original_email_description || item.quickbooks_item_name,
+        qty: item.quantity,
+        unitPrice: parseFloat(item.unit_price || 0),
+        total: (parseFloat(item.quantity) || 0) * (parseFloat(item.unit_price) || 0),
+        notes: item.kitchen_notes_and_flavors // Pass kitchen notes to HTML template
+      };
+    });
+
+    // Calculate Totals for the invoice object
+    invoiceData.itemsSubtotal = 0;
+    invoiceData.items.forEach(item => invoiceData.itemsSubtotal += item.total);
+
+    invoiceData.tip = parseFloat(orderData['TipAmount'] || 0);
+    invoiceData.otherChargesAmount = parseFloat(orderData['OtherChargesAmount'] || 0);
+    invoiceData.otherChargesDescription = orderData['OtherChargesDescription'] || "Other Charges";
+    
+    invoiceData.deliveryFee = parseFloat(BASE_DELIVERY_FEE); // From Constants.gs
+    if (orderData['master_delivery_time_ms']) {
+        const deliveryHour = new Date(orderData['master_delivery_time_ms']).getHours();
+        if (deliveryHour >= DELIVERY_FEE_CUTOFF_HOUR) { // From Constants.gs
+            invoiceData.deliveryFee = parseFloat(AFTER_4PM_DELIVERY_FEE); // From Constants.gs
+        }
+    }
+    
+    invoiceData.utensilsCost = 0;
+    invoiceData.utensilsCount = 0; // For display in template if needed
+    if (orderData['Include Utensils?'] === 'Yes') {
+        const numUtensils = parseInt(orderData['If yes: how many?']) || 0;
+        if (numUtensils > 0) {
+            invoiceData.utensilsCount = numUtensils;
+            invoiceData.utensilsCost = numUtensils * parseFloat(COST_PER_UTENSIL_SET); // From Constants.gs
+        }
+    }
+
+    invoiceData.grandTotal = invoiceData.itemsSubtotal + 
+                         invoiceData.tip + 
+                         invoiceData.otherChargesAmount + 
+                         invoiceData.deliveryFee + 
+                         invoiceData.utensilsCost;
+    // --- End Prepare data for HTML Template ---
+
+    htmlTemplate.invoice = invoiceData; // Pass the data object to the HTML template
+    const htmlContent = htmlTemplate.evaluate().getContent();
+    console.log(`generateInvoicePdfFromHtml: HTML content generated for order ${orderNum}. Length: ${htmlContent.length}`);
+
+    // Convert HTML to PDF
+    const pdfBlob = Utilities.newBlob(htmlContent, MimeType.HTML, `Invoice-${orderNum}.pdf`)
+                           .getAs(MimeType.PDF);
+    // Set a more descriptive name for the PDF file
+    const pdfFileName = `Invoice-${orderNum}-${(orderData['Customer Name'] || 'Unknown').replace(/[^a-zA-Z0-9\s]/g, "_").replace(/\s+/g, "_")}.pdf`;
+    pdfBlob.setName(pdfFileName); 
+    
+    console.log(`generateInvoicePdfFromHtml: PDF blob created from HTML: ${pdfBlob.getName()}, Size: ${pdfBlob.getBytes().length}`);
+    return pdfBlob;
+
+  } catch (e) {
+    console.error(`Error in generateInvoicePdfFromHtml for order ${orderNum}: ${e.toString()}${(e.stack ? ("\nStack: " + e.stack) : "")}`);
+    return null; 
+  }
+}
+
