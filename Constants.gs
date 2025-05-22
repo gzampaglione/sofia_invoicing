@@ -3,8 +3,8 @@
 
 // === CONFIGURATION ===
 const API_KEY = PropertiesService.getScriptProperties().getProperty('GL_API_KEY');
-const SHEET_ID = '1qlEw5k5K-Tqg0joxXeiKtpgr6x8BzclobI-E-_mORhY'; // Main Spreadsheet ID
-const ITEM_LOOKUP_SHEET_NAME = "Item Lookup";
+const SHEET_ID = '1QEnOr1KCu42w36BcIjYuYA9Hol8rPj-uVH8m_244BX8'; // Main Spreadsheet ID
+const ITEM_LOOKUP_SHEET_NAME = "ITEM-LOOKUP";
 const INVOICE_TEMPLATE_SHEET_NAME = "INVOICE_TEMPLATE";
 const KITCHEN_SHEET_TEMPLATE_NAME = "KITCHEN_SHEET_TEMPLATE";
 
@@ -20,9 +20,9 @@ const CLIENT_RULES_LOOKUP = [
 
 // Delivery fee and utensil cost constants
 const BASE_DELIVERY_FEE = 25.00;
-const AFTER_4PM_DELIVERY_FEE = 40.00; // Example, adjust as needed for after-hours
+const AFTER_4PM_DELIVERY_FEE = 50.00; // Example, adjust as needed for after-hours
 const DELIVERY_FEE_CUTOFF_HOUR = 16; // 4 PM (16:00 in 24-hour format)
-const COST_PER_UTENSIL_SET = 0.25; // Example cost per utensil set
+const COST_PER_UTENSIL_SET = 0.15; // Example cost per utensil set
 
 // === INVOICE TEMPLATE CELL MAPPING CONSTANTS ===
 // These map to specific cells in your INVOICE_TEMPLATE sheet for data population.
