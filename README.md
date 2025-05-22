@@ -7,9 +7,12 @@ This is an app script to parse emails/email chains, extract content in standardi
 
 ## Tweaks
 - Stylistic revisions to invoicing HTML
-- Formatting / ensuring proper information of kitchen sheet. Suggest HTML
+- Remove "selected flavors" from Google Doc kitchen sheet, only keep customer notes
 - Revising template emails (tabs, right customer name instead of delivery contact)
 
 ## Future Builds
+- Redo the kitchen sheet in HTML, save into system somewhere (Toast integration is bad, Square integration is good)
 - Penn PO workflow
-- QuickBooks integration
+- Tax calculation on invoice (tax exempt = Penn)
+- QuickBooks integration --> save invoice
+- Google Calendar integration of order
