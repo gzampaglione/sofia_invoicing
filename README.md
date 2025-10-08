@@ -10,8 +10,8 @@ This is an app script to parse emails/email chains, extract content in standardi
 ## Codebases
 | Name    | GL_API_KEY      | SHEET_ID         |
 |---------|------------------|------------------|
-| El Merkury   | AIzaSyCl56gLtcTXtrXHaQEEqQbMgn7ObVp3ABo   | 1QEnOr1KCu42w36BcIjYuYA9Hol8rPj-uVH8m_244BX8  |
-| Gerardo | AIzaSyAGLdXjwawqNJGQmYaqB_Umvv8w4Dg7188   | 1qlEw5k5K-Tqg0joxXeiKtpgr6x8BzclobI-E-_mORhY  |
+| El Merkury   | CONFIDENTIAL   | 1QEnOr1KCu42w36BcIjYuYA9Hol8rPj-uVH8m_244BX8  |
+| Gerardo | CONFIDENTIAL   | 1qlEw5k5K-Tqg0joxXeiKtpgr6x8BzclobI-E-_mORhY  |
 
 
 ## Bugs
